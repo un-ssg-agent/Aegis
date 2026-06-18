@@ -35,6 +35,9 @@ the defensible play.
 opencode.json                         # mounts the MCP server + loads AGENTS.md
 AGENTS.md                             # the compliance gate (injected every call)
 docs/architecture.md                  # design, hash chain, threat model, limits
+docs/design.md                        # full design doc: CUJs, components, roadmap
+docs/demo.md                          # ~5-min live demo runbook (incl. manual tamper)
+docs/onboarding.md                    # beginner setup + day-one guide for teammates
 docs/sample-report.md                 # a generated Model Card (sample)
 audit-trail/decisions.jsonl           # the tamper-evident paper trail (runtime)
 mcp-servers/compliance-auditor/
