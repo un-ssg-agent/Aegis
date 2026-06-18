@@ -198,6 +198,26 @@ traceable."
 
 ---
 
+## 7b. Bonus — fairness with real numbers (45 sec, no key needed)
+
+One-time: `uv sync --extra fairness`. Then:
+
+```bash
+uv run --extra fairness python mcp-servers/compliance-auditor/fairness_demo.py
+```
+
+It builds a COMPAS-like dataset, fires the fairness gate, runs `fairness_scan`
+(Fairlearn) to compute the **actual** group disparities, and logs the decision
+with those numbers in `test_results`.
+
+**Say:** "For the fairness case, the record doesn't just say *what* the developer
+chose — it captures the base-rate disparity (0.244) and false-positive-rate
+disparity (0.191) the choice was made against. Real numbers, computed from the
+data with Fairlearn. And it still asserts **no verdict** — which disparity to
+accept stays a human judgment."
+
+---
+
 ## 8. Close (15 sec)
 
 > "So: we don't pretend to judge fairness. We make the decision process
@@ -235,6 +255,9 @@ uv run python mcp-servers/compliance-auditor/tamper_demo.py
 
 # Act 6 — report
 uv run python mcp-servers/compliance-auditor/core.py report     # -> compliance_report.md
+
+# Bonus — fairness with REAL numbers (one-time: uv sync --extra fairness)
+uv run --extra fairness python mcp-servers/compliance-auditor/fairness_demo.py
 ```
 
 ---
