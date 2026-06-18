@@ -44,6 +44,8 @@ mcp-servers/compliance-auditor/
   core.py        # stdlib: hash chain + verify + Model Card (no deps, no network)
   server.py      # MCP wrapper: log_decision / verify_audit_trail / generate_compliance_report
   selftest.py    # proves: honest chain verifies, a forged choice is caught
+  tamper_demo.py # narrated: every hand-edit is caught (+ honest head-recompute caveat)
+  fairness.py    # OPTIONAL (uv sync --extra fairness): Fairlearn group-disparity facts
   demo.py        # drives a REAL model through the gate end-to-end (no OpenCode needed)
   llm_client.py  # stdlib OpenAI-compatible client (DeepSeek/OpenAI/Gemini fallback)
   requirements.txt

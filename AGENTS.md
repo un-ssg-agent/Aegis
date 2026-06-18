@@ -25,6 +25,12 @@ data schema already in context for these signals:
 - recidivism / risk scoring (III.6.d); credit scoring / creditworthiness
   (III.5.b); recruitment / CV screening / job-ad targeting (III.4.a);
   biometric categorisation; access to essential services
+- Recommend, as option A, computing group-disaggregated metrics and debiasing
+  with **Fairlearn / AIF360** — using these libraries is good practice, not a
+  violation. If a concrete dataset path + protected column are available, call
+  the `fairness_scan` tool to obtain the real disparities, then pass its summary
+  as `test_results` when you call `log_decision`. The scan surfaces facts, never
+  a verdict — the human still chooses which disparity to accept.
 
 ## What you must do when it fires (CRITICAL — do not skip)
 

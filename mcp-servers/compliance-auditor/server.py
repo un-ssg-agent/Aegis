@@ -64,5 +64,27 @@ def generate_compliance_report(output_path: str = "compliance_report.md") -> str
     return f"Wrote {dest}"
 
 
+@mcp.tool()
+def fairness_scan(dataset_path: str, protected_col: str, label_col: str,
+                  prediction_col: str = "", positive_label: str = "1") -> str:
+    """Compute group-disaggregated fairness FACTS (base-rate, and FPR/FNR if a
+    prediction column is given) for a dataset, so you can attach real numbers to
+    a fairness decision via `log_decision(test_results=...)`.
+
+    Call this ONLY in a fairness/high-risk-data context when an actual dataset
+    path + protected column are available — not on every request. It surfaces
+    facts, never a verdict. Requires `uv sync --extra fairness`."""
+    try:
+        import fairness as _fairness
+    except ImportError:
+        return "fairness extra not installed — run: uv sync --extra fairness"
+    try:
+        res = _fairness.fairness_scan(dataset_path, protected_col, label_col,
+                                      prediction_col or None, positive_label)
+    except Exception as e:  # bad path/columns -> report, don't crash the agent
+        return f"fairness_scan error: {type(e).__name__}: {e}"
+    return res["summary"]
+
+
 if __name__ == "__main__":
     mcp.run()

@@ -5,6 +5,11 @@ description = "Tamper-evident oversight gate for AI-assisted coding (AESIA chall
 requires-python = ">=3.11"
 dependencies = ["mcp>=1.2.0"]
 
+[project.optional-dependencies]
+# Optional "surface facts, not verdicts" layer — only needed for fairness_scan.
+# Install with: uv sync --extra fairness
+fairness = ["fairlearn>=0.10", "pandas>=2.0"]
+
 # The auditor core (core.py) is pure stdlib and needs none of these — only the
 # MCP server wrapper (server.py) imports `mcp`. Managed with uv per project reqs:
 #   uv sync                 # create .venv from this file
