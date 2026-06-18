@@ -1,0 +1,11 @@
+[project]
+name = "compliance-auditor"
+version = "0.1.0"
+description = "Tamper-evident oversight gate for AI-assisted coding (AESIA challenge)"
+requires-python = ">=3.11"
+dependencies = ["mcp>=1.2.0"]
+
+# The auditor core (core.py) is pure stdlib and needs none of these — only the
+# MCP server wrapper (server.py) imports `mcp`. Managed with uv per project reqs:
+#   uv sync                 # create .venv from this file
+#   uv run python mcp-servers/compliance-auditor/server.py

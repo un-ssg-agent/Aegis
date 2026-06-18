@@ -4,7 +4,7 @@
   "mcp": {
     "compliance-auditor": {
       "type": "local",
-      "command": ["python3", "mcp-servers/compliance-auditor/server.py"],
+      "command": ["uv", "run", "python", "mcp-servers/compliance-auditor/server.py"],
       "enabled": true,
       "environment": {
         "COMPLIANCE_ROOT": "."

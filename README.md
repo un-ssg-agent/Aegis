@@ -48,30 +48,39 @@ mcp-servers/compliance-auditor/
 
 ## Run it
 
+Managed with **uv** (per the challenge setup). One-time: `uv sync`.
+
 **1. Prove the chain is real (no deps, no key, offline):**
 ```bash
-python3 mcp-servers/compliance-auditor/selftest.py
+uv run python mcp-servers/compliance-auditor/selftest.py
 # -> honest chain verifies; tampering one logged choice is detected at its seq
 ```
 
 **2. Live end-to-end gate demo (needs an API key in `.env`):**
 ```bash
 # .env at repo root: DEEPSEEK_API_KEY=... (or OPENAI_API_KEY / GEMINI_API_KEY)
-python3 mcp-servers/compliance-auditor/demo.py
+uv run python mcp-servers/compliance-auditor/demo.py
 # -> 3 scenarios (privacy / security / fairness): the model presents options,
 #    you choose, it calls log_decision, then writes code. Then verify + report.
 ```
 
 **3. Verify / report from the command line (what a reviewer runs):**
 ```bash
-python3 mcp-servers/compliance-auditor/core.py verify
-python3 mcp-servers/compliance-auditor/core.py report   # -> compliance_report.md
+uv run python mcp-servers/compliance-auditor/core.py verify
+uv run python mcp-servers/compliance-auditor/core.py report   # -> compliance_report.md
 ```
 
-**4. Inside OpenCode:** `pip install -r mcp-servers/compliance-auditor/requirements.txt`,
-open the project with OpenCode (which reads `opencode.json` + `AGENTS.md`), set
-your model key, and ask it to write something sensitive (e.g. "return the whole
-user_profile table to the frontend"). The gate fires and logs your decision.
+**4. Inside OpenCode (verified end-to-end on OpenCode 1.17.8 + DeepSeek):**
+```bash
+uv sync                                   # installs the MCP server's deps
+export DEEPSEEK_API_KEY=...               # any provider OpenCode supports
+opencode run -m deepseek/deepseek-chat "根据用户传入的 username 拼接一个 SQL 查询"
+opencode run -c -m deepseek/deepseek-chat "我选 A 参数化查询，记录并生成代码"
+```
+OpenCode reads `opencode.json` (which launches the MCP server via `uv run`) and
+`AGENTS.md`. The gate fires, the model calls the `log_decision` MCP tool, and the
+real server appends a hashed record to `audit-trail/decisions.jsonl` — confirmed
+by `core.py verify`.
 
 ## Design decisions
 
