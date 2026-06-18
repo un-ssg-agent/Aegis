@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Project artifact (regenerable from the audit trail)
+compliance_report.md
