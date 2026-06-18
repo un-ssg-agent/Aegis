@@ -54,6 +54,10 @@ Managed with **uv** (per the challenge setup). One-time: `uv sync`.
 ```bash
 uv run python mcp-servers/compliance-auditor/selftest.py
 # -> honest chain verifies; tampering one logged choice is detected at its seq
+
+uv run python mcp-servers/compliance-auditor/tamper_demo.py
+# -> narrated: flip / garble / delete / "smart forger" each caught at the exact seq,
+#    plus the honest caveat (recomputing the HEAD's own hash is the one gap -> anchor it)
 ```
 
 **2. Live end-to-end gate demo (needs an API key in `.env`):**
