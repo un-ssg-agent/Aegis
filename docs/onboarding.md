@@ -1,64 +1,79 @@
-# 新人上手指南 / Onboarding — SSGCheck（UN Tech Over 2026, Track 1）
+# Onboarding Guide — SSGCheck (UN Tech Over 2026, Track 1)
 
-> 这份文档是给**第一次参加黑客松的同学（高中生）**准备的。
-> 不假设你装过任何开发工具，每一步都写清楚，遇到的常见报错也列出来了。
-> 命令和工具名保持英文（照抄即可），解释用中文。
+> This guide is for **first-time hackathon participants (high-school level)**.
+> It assumes you have never installed developer tools before. Every step is
+> spelled out, and the common errors are listed at the bottom.
 >
-> **目标**：在黑客松开始之前，把电脑环境、代码仓库、和项目背景都准备好，
-> 这样正式开始时你能直接写代码，而不是在装软件。
+> **Goal:** before the hackathon starts, get your laptop, the code repository,
+> and your understanding of the project all ready — so on day one you can write
+> code instead of installing software.
 
-如果任何一步卡住了：**先看本页底部的「常见报错」，还不行就在团队聊天频道里举手求助**——
-不要一个人卡一小时，问一句可能 1 分钟就解决。
-
----
-
-## 0. 30 秒看懂我们在做什么
-
-我们参加的是 **AESIA / SpainGov 赛道（Track 1）：「Agent 世界里的安全、监督与治理」**。
-
-一句话：**给一个 AI 编程助手（OpenCode）加一道"合规关卡"。**
-
-当开发者让 AI 写涉及**隐私 / 安全 / 公平**的代码时，我们的工具会：
-
-1. **拦一下** —— 提示这件事有已知的风险或权衡（比如 SQL 注入、泄露用户隐私字段）。
-2. **摆选项** —— 给出至少两个方案，讲清楚各自的利弊，让**人来决定**（AI 不替你拍板）。
-3. **记账** —— 把"提示了什么、人选了哪个、为什么"写进一个**防篡改的日志**（用哈希链，改一个字就能被发现）。
-4. **出报告** —— 把日志变成一份人能读的合规报告。
-
-> ⚠️ 重点：我们**不做**"自动判断代码公不公平"——那在技术上不可能（公平取决于数据和价值观）。
-> 我们做的是 **"防抵赖的留痕"**：保证人做了知情决定，而且这个记录事后改不了。
-
-详细设计见 [`docs/architecture.md`](./architecture.md)，项目说明见 [`README.md`](../README.md)。
+If any step gets you stuck: **first check the "Troubleshooting" section at the
+bottom; if that doesn't help, raise your hand in the team chat channel.** Don't
+spend an hour stuck alone — one question might be solved in a minute.
 
 ---
 
-## 1. 配置你的电脑（以 Mac 为例）
+## 0. What we're building (30 seconds)
 
-> Windows 用户：建议装 **WSL（Windows Subsystem for Linux）** 后按 Linux 步骤做；
-> 或在聊天频道找人帮忙。下面以 **Mac** 为主。
+We're in **Track 1 — AESIA / SpainGov: "Safety, Supervision and Governance in
+the Agentic World."**
 
-打开 **「终端 / Terminal」** 应用（按 `Cmd + 空格`，输入 `Terminal` 回车）。
-下面的命令都是**一行一行复制粘贴到终端、按回车**。
+In one sentence: **we add a "compliance gate" to an AI coding assistant
+(OpenCode).**
 
-### 1.1 Homebrew（包管理器，用它来装其它软件）
+When a developer asks the AI to write code that touches **privacy / security /
+fairness**, our tool will:
 
-去官网 https://brew.sh/ ，或者直接运行：
+1. **Pause** — flag that this carries known risks or tensions (e.g. SQL
+   injection, leaking sensitive user fields).
+2. **Present options** — give at least two approaches with their tradeoffs, and
+   let the **human** decide (the AI does not decide for you).
+3. **Record it** — write "what was flagged, what the human chose, and why" into
+   a **tamper-evident log** (a hash chain — change one character and it's
+   detectable).
+4. **Report** — turn that log into a human-readable compliance report.
+
+> ⚠️ Key point: we **do not** try to "automatically judge whether code is fair."
+> That is technically impossible (fairness depends on the data and on human
+> values). What we build is **non-repudiable record-keeping**: proof that a
+> human made an informed decision, and that the record can't be edited
+> afterwards.
+
+Full design: [`docs/architecture.md`](./architecture.md). Overview:
+[`README.md`](../README.md).
+
+---
+
+## 1. Set up your laptop (Mac)
+
+> Windows users: install **WSL (Windows Subsystem for Linux)** and follow the
+> Linux steps, or ask for help in the chat channel. The steps below are for
+> **Mac**.
+
+Open the **Terminal** app (press `Cmd + Space`, type `Terminal`, hit Enter).
+Run the commands below **one line at a time**: copy, paste into Terminal, press
+Enter.
+
+### 1.1 Homebrew (the package manager — you use it to install everything else)
+
+Go to https://brew.sh/ , or just run:
 
 ```bash
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 ```
 
-装完后，**Apple 芯片（M1/M2/M3/M4）的 Mac** 还要把 brew 加进 PATH（否则找不到 `brew` 命令）。
-终端里运行：
+After it finishes, on **Apple Silicon Macs (M1/M2/M3/M4)** you must add brew to
+your PATH (otherwise the `brew` command won't be found). Run:
 
 ```bash
 echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> ~/.zprofile
 eval "$(/opt/homebrew/bin/brew shellenv)"
 ```
 
-验证：`brew --version` 能打印版本号就成功了。
+Verify: `brew --version` should print a version number.
 
-### 1.2 Git（版本控制，管理代码）
+### 1.2 Git (version control — manages the code)
 
 ```bash
 brew install git
@@ -70,304 +85,391 @@ brew install git
 brew install python@3.13
 ```
 
-> 注意：以后用 `python3`（不是 `python`）这个命令。验证：`python3 --version`。
+> Note: from now on use `python3` (not `python`). Verify: `python3 --version`.
 
-### 1.4 uv（Python 环境/依赖管理器 —— 本项目要求用它）
+### 1.4 uv (Python environment / dependency manager — required by this project)
 
 ```bash
 brew install uv
 ```
 
-> 也可以用 `pip install uv`，但 `brew install uv` 最省事。
-> `uv` 是目前最快的 Python 依赖工具，我们项目用它来装依赖、跑脚本。
-> 验证：`uv --version`。
+> You can also use `pip install uv`, but `brew install uv` is easiest.
+> `uv` is currently the fastest Python tool; our project uses it to install
+> dependencies and run scripts. Verify: `uv --version`.
 
-### 1.5 OpenCode（我们要扩展的开源 AI 编程助手）
+### 1.5 OpenCode (the open-source AI coding assistant we're extending)
 
 ```bash
 brew install anomalyco/tap/opencode
 ```
 
-> 如果 brew 这条失败，备选方案（需要先有 Node.js：`brew install node`）：
+> If that brew command fails, fallback (needs Node.js first: `brew install node`):
 > ```bash
 > npm install -g opencode-ai
 > ```
-> 验证：`opencode --version`（应打印类似 `1.17.x`）。
+> Verify: `opencode --version` (should print something like `1.17.x`).
 
-### 1.6 代码编辑器（IDE）
+### 1.6 Code editor (IDE)
 
-至少装一个：
+Install at least one:
 
-- **VS Code**：去 https://code.visualstudio.com/ 下载安装。最主流、免费。
-- **Cursor**（可选）：去 https://cursor.com/ 下载。它内置 AI，适合"vibe coding"。
+- **VS Code**: download from https://code.visualstudio.com/ . The most popular,
+  free choice.
+- **Cursor** (optional): download from https://cursor.com/ . It has AI built in,
+  great for "vibe coding."
 
-### 1.7 Claude Code（可选，但强烈推荐）
+### 1.7 Claude Code (optional, but strongly recommended)
 
-如果你想让 AI 帮你写代码、读代码、查报错：
+If you want AI to help you write code, read code, and debug errors:
 
-- 安装 Claude Code，并开通 **Pro 套餐**（付费）。
-- 它能直接在终端里帮你改整个项目，对新手特别友好。
+- Install Claude Code and activate a **Pro plan** (paid).
+- It can edit your whole project right from the terminal — very beginner
+  friendly.
 
-> 没有付费 AI 也没关系——你可以用免费的 ChatGPT / Claude 网页版，把代码或报错**粘贴进去问**。
+> No paid AI? That's fine — use the free ChatGPT / Claude web app and **paste in
+> your code or error messages** to ask questions.
 
-### 1.8 最终验证（很重要！）
+### 1.8 Final verification (important!)
 
-逐条运行下面 4 个命令，**每个都要能打印版本号、不报错**：
+Run these 4 commands one by one. **Each must print a version number with no
+errors:**
 
 ```bash
 git --version
-python3 --version      # Mac/Linux 用这个；Windows 用 py --version
+python3 --version      # Mac/Linux; on Windows use py --version
 uv --version
 opencode --version
 ```
 
-四个都 OK = 环境就绪 ✅。任何一个报错，去看本页底部「常见报错」，或在聊天频道举手。
+All four OK = environment ready ✅. If any errors, see "Troubleshooting" at the
+bottom, or raise your hand in the chat channel.
 
 ---
 
-## 2. 拿到代码并学会协作（GitHub）
+## 2. Get the code and learn to collaborate (GitHub)
 
-我们的仓库：`git@github.com:un-ssg-agent/ssgcheck.git`
+Our repository: `git@github.com:un-ssg-agent/ssgcheck.git`
 
-### 2.1 先配置 SSH key（用 `git@...` 这种地址必须先做这一步）
+### 2.1 Set up an SSH key first (required to use the `git@...` address)
 
-SSH key 就像一把"钥匙"，让 GitHub 认得你的电脑。一次配置，终身受用。
+An SSH key is like a "key" that lets GitHub recognize your computer. Set it up
+once, use it forever.
 
 ```bash
-# 1) 生成钥匙（邮箱换成你自己的 GitHub 邮箱，其它照抄，一路回车即可）
-ssh-keygen -t ed25519 -C "你的邮箱@example.com"
+# 1) Generate the key (replace the email with your GitHub email; press Enter at every prompt)
+ssh-keygen -t ed25519 -C "your-email@example.com"
 
-# 2) 把"公钥"复制到剪贴板
+# 2) Copy the PUBLIC key to your clipboard
 pbcopy < ~/.ssh/id_ed25519.pub
 ```
 
-然后去 GitHub 网站：**右上角头像 → Settings → SSH and GPG keys → New SSH key**，
-标题随便起，把刚才复制的内容粘进 Key 框，保存。
+Then on GitHub: **your avatar (top right) → Settings → SSH and GPG keys → New
+SSH key**, give it any title, paste what you just copied into the Key box, save.
 
-验证连通：
+Test the connection:
 
 ```bash
 ssh -T git@github.com
 ```
 
-看到 `Hi <你的用户名>! You've successfully authenticated...` 就成功了。
+If you see `Hi <your-username>! You've successfully authenticated...`, it
+worked.
 
-> 觉得 SSH 太麻烦？也可以用 **HTTPS** 地址克隆（会让你登录 GitHub）：
+> Find SSH too fiddly? You can clone with the **HTTPS** address instead (it will
+> ask you to log in to GitHub):
 > `git clone https://github.com/un-ssg-agent/ssgcheck.git`
 
-### 2.2 克隆（下载）仓库到本地
+### 2.2 Clone (download) the repository
 
 ```bash
 git clone git@github.com:un-ssg-agent/ssgcheck.git
 cd ssgcheck
 ```
 
-现在你电脑上就有这个项目了。
+Now the project is on your computer.
 
-### 2.3 必须会的基础 git 工作流
+### 2.3 The basic git workflow you must know
 
-> 心智模型：远程仓库（GitHub 上的）是"大家共享的版本"，你电脑上的是"你的本地副本"。
-> **开工前先 pull，写完后 commit 再 push。**
+> Mental model: the remote repo (on GitHub) is the "shared version," and the
+> copy on your computer is "your local copy." **Pull before you start, then
+> commit and push when you're done.**
 
 ```bash
-# 开工前：先拉取队友的最新改动
+# Before starting: pull your teammates' latest changes
 git pull
 
-# 看一下哪些文件改了
+# See which files changed
 git status
 
-# 把你的改动"暂存"
-git add .              # 加全部改动；也可以 git add 某个文件
+# "Stage" your changes
+git add .              # stages everything; or git add a specific file
 
-# 提交（-m 后面写清楚你改了什么）
-git commit -m "简短说明你做了什么"
+# Commit (after -m, clearly describe what you did)
+git commit -m "short description of what you did"
 
-# 推送到 GitHub（让队友能看到）
+# Push to GitHub (so teammates can see it)
 git push
 ```
 
-**新手建议：不要直接往 `main` 上 push。** 先开一个自己的分支，做完再合并：
+**Beginner tip: don't push straight to `main`.** Make your own branch first,
+then merge when done:
 
 ```bash
-git checkout -b 你的名字-在做的功能     # 新建并切换到自己的分支
-# ...写代码、commit...
-git push -u origin 你的名字-在做的功能   # 第一次推送你的分支
+git checkout -b yourname-feature       # create and switch to your own branch
+# ...write code, commit...
+git push -u origin yourname-feature    # first push of your branch
 ```
 
-然后在 GitHub 网页上开一个 **Pull Request (PR)**，让队友 review 后再合并到 `main`。
+Then open a **Pull Request (PR)** on the GitHub website so a teammate can review
+it before it merges into `main`.
 
-> 遇到 `merge conflict`（冲突）别慌——那只是两个人改了同一处。
-> 截图发聊天频道，会有人带你解。
+> Hit a `merge conflict`? Don't panic — it just means two people edited the same
+> spot. Screenshot it and post in the chat channel; someone will walk you
+> through it.
 
 ---
 
-## 3. 把项目跑起来（运行 MVP）
+## 3. Run the project (the MVP)
 
-> 这个仓库里**已经有一个能跑的 MVP**：`mcp-servers/compliance-auditor/` 就是核心。
-> 下面带你一步步把它真正跑起来——跑通了你就理解了一半。
+> This repo **already contains a working MVP**: `mcp-servers/compliance-auditor/`
+> is the core. Let's get it running step by step — once it runs, you already
+> understand half of it.
 
-进入项目目录后：
+After `cd`-ing into the project:
 
-### 3.1 安装依赖（用 uv）
+### 3.1 Install dependencies (with uv)
 
 ```bash
 uv sync
 ```
 
-这会根据 `pyproject.toml` / `uv.lock` 自动建一个虚拟环境并装好依赖（主要是 `mcp`）。
+This reads `pyproject.toml` / `uv.lock`, creates a virtual environment, and
+installs the dependencies (mainly `mcp`) automatically.
 
-### 3.2 自测：证明"防篡改"是真的（不需要联网、不需要 API key）
+### 3.2 Self-test: prove the "tamper-evidence" is real (no internet, no API key)
 
 ```bash
 uv run python mcp-servers/compliance-auditor/selftest.py
 ```
 
-应该看到：诚实的日志链校验通过；然后我们故意改一条记录，校验**立刻报出被篡改**。
-这就是项目的"护城河"——日志改一个字就会被发现。
+You should see: an honest log chain verifies; then we deliberately edit one
+record and verification **immediately reports it as tampered**. This is the
+project's moat — change one character of the log and it's caught.
 
-### 3.3 配置 API key（跑需要 AI 的部分时才需要）
+### 3.3 Set up an API key (only needed for the AI-powered parts)
 
-某些步骤（让真模型走一遍流程）需要一个大模型的 key。
+Some steps (driving a real model through the flow) need a large-language-model
+key.
 
-- **黑客松当天**：组织者会发 key，按他们说的填。
-- **现在练习**：可以用你自己的 key（DeepSeek / OpenAI / Gemini 任一个）。
+- **On hackathon day:** the organizers provide a key — use it as they instruct.
+- **To practice now:** use your own key (any one of DeepSeek / OpenAI / Gemini).
 
-在**项目根目录**新建一个名叫 `.env` 的文件，写入（只需其中一个）：
+Create a file named `.env` in the **project root** with (only one is needed):
 
 ```
-DEEPSEEK_API_KEY=你的key
-# 或 OPENAI_API_KEY=你的key
-# 或 GEMINI_API_KEY=你的key
+DEEPSEEK_API_KEY=your_key
+# or OPENAI_API_KEY=your_key
+# or GEMINI_API_KEY=your_key
 ```
 
-> ⚠️ **千万别把 `.env` 提交到 GitHub！** 仓库的 `.gitignore` 已经帮你忽略了它，
-> 但你自己也要警惕——key 泄露 = 别人能花你的钱。
+> ⚠️ **Never commit `.env` to GitHub!** The repo's `.gitignore` already ignores
+> it, but stay alert yourself — a leaked key means someone can spend your money.
 
-### 3.4 端到端演示：让真模型走一遍合规关卡
+### 3.4 End-to-end demo: drive a real model through the gate
 
 ```bash
 uv run python mcp-servers/compliance-auditor/demo.py
 ```
 
-它会跑 3 个场景（隐私 / 安全 / 公平）：模型识别风险 → 摆选项 → 你（脚本里预设的）选择 →
-调用工具把决策写进**哈希链** → 生成代码。最后自动校验链 + 出报告。
+It runs 3 scenarios (privacy / security / fairness): the model spots the risk →
+presents options → "you" (the choice is scripted) pick one → it calls the tool
+to write the decision into the **hash chain** → it generates code. Finally it
+verifies the chain and renders a report.
 
-### 3.5 在真正的 OpenCode 里跑（最接近最终形态）
+### 3.5 Run it inside real OpenCode (closest to the final form)
 
 ```bash
 uv sync
-export DEEPSEEK_API_KEY=你的key        # 或换成组织者给的 provider/key
-opencode run -m deepseek/deepseek-chat "根据用户传入的 username 拼接一个 SQL 查询"
-opencode run -c -m deepseek/deepseek-chat "我选 A 参数化查询，记录并生成代码"
+export DEEPSEEK_API_KEY=your_key        # or the provider/key the organizers give
+opencode run -m deepseek/deepseek-chat "Build a SQL query by interpolating the user-supplied username"
+opencode run -c -m deepseek/deepseek-chat "I choose A, the parameterized query — log it and generate the code"
 ```
 
-OpenCode 会自动读 `opencode.json`（它通过 `uv run` 启动我们的 MCP 工具）和 `AGENTS.md`（关卡规则）。
-你会看到关卡触发、模型调用 `log_decision` 工具、`audit-trail/decisions.jsonl` 里多出一条带哈希的记录。
+OpenCode automatically reads `opencode.json` (which launches our MCP tool via
+`uv run`) and `AGENTS.md` (the gate rules). You'll see the gate fire, the model
+call the `log_decision` tool, and a new hashed record appear in
+`audit-trail/decisions.jsonl`.
 
-### 3.6 校验 + 出报告（评审会跑的命令）
+### 3.6 Verify + report (the commands a reviewer runs)
 
 ```bash
-uv run python mcp-servers/compliance-auditor/core.py verify     # 校验链是否完整
-uv run python mcp-servers/compliance-auditor/core.py report     # 生成 compliance_report.md
+uv run python mcp-servers/compliance-auditor/core.py verify     # check the chain is intact
+uv run python mcp-servers/compliance-auditor/core.py report     # generate compliance_report.md
 ```
 
 ---
 
-## 4. 看懂这个项目
+## 4. Understand the project
 
-### 4.1 文件地图（每个文件干什么）
+### 4.1 File map (what each file does)
 
 ```
-README.md                      项目总览 + 怎么跑（先读这个）
-AGENTS.md                      ★关卡规则★：注入给 AI 的"遇到敏感请求要先问再写"指令 + 关键词表
-opencode.json                  OpenCode 配置：挂载我们的 MCP 工具 + 加载 AGENTS.md
-docs/architecture.md           架构图、哈希链原理、威胁模型、诚实的局限
-docs/onboarding.md             就是你正在读的这份
-docs/sample-report.md          一份生成好的合规报告样例
-audit-trail/decisions.jsonl    防篡改的决策日志（运行时产生）
+README.md                      Project overview + how to run it (read this first)
+AGENTS.md                      ★The gate rules★: instructions injected into the AI
+                               ("on sensitive requests, ask before writing") + keyword list
+opencode.json                  OpenCode config: mounts our MCP tool + loads AGENTS.md
+docs/architecture.md           Architecture diagram, hash-chain design, threat model, honest limits
+docs/onboarding.md             The file you're reading now
+docs/sample-report.md          A sample generated compliance report
+audit-trail/decisions.jsonl    The tamper-evident decision log (created at runtime)
 mcp-servers/compliance-auditor/
-  core.py        ★核心★ 纯标准库：哈希链 + 校验 + 报告（无第三方依赖、不联网）
-  server.py      MCP 包装：把 core 的功能暴露成 3 个工具给 AI 调用
-  selftest.py    自测：证明诚实链通过、篡改被抓
-  demo.py        端到端演示（不需要装 OpenCode 也能跑）
-  llm_client.py  一个极简的大模型客户端（DeepSeek/OpenAI/Gemini 自动切换）
-pyproject.toml / uv.lock        uv 的项目/依赖锁文件
+  core.py        ★The core★ pure standard library: hash chain + verify + report (no deps, no network)
+  server.py      MCP wrapper: exposes core's functions as 3 tools the AI can call
+  selftest.py    Self-test: proves an honest chain verifies and a forged one is caught
+  demo.py        End-to-end demo (runs without installing OpenCode)
+  llm_client.py  A tiny LLM client (auto-falls back across DeepSeek/OpenAI/Gemini)
+pyproject.toml / uv.lock        uv project / dependency lock files
 ```
 
-**最值得先读的两个文件**：`AGENTS.md`（关卡逻辑）和 `core.py`（哈希链，整个项目的硬核就这 ~30 行）。
+**The two files worth reading first:** `AGENTS.md` (the gate logic) and
+`core.py` (the hash chain — the whole "hard" part of the project is ~30 lines).
 
-### 4.2 一个核心概念：哈希链（hash chain）
+### 4.2 One core concept: the hash chain
 
-每条决策记录里都存了**上一条记录的哈希值**（像链条一环扣一环）。
-任何人改了中间某条记录，它的哈希就变了，后面所有"上一条哈希"就对不上——
-`verify` 一跑就知道第几条被动过。**这就是"防篡改/防抵赖"的全部魔法，没有玄学。**
+Each decision record stores **the hash of the previous record** (like links in a
+chain). If anyone edits a record in the middle, its hash changes, so every later
+"previous hash" no longer matches — run `verify` and it tells you exactly which
+record was touched. **That's the entire "tamper-evidence" magic — no black
+magic.**
 
-### 4.3 用 AI 帮你理解（强烈推荐）
+### 4.3 Use AI to help you understand (strongly recommended)
 
-你不需要一上来就全懂。善用 AI：
+You don't need to understand everything up front. Lean on AI:
 
-- 把 `core.py` 整段粘给 ChatGPT/Claude，问：**"这段代码在干嘛？逐行解释给高中生听。"**
-- 读 Track 1 官方文档时，让 AI 帮你**总结 + 出几个理解性问题考你自己**。
-- 看不懂某个报错，把**报错全文**粘给 AI，问"这是什么意思，怎么修"。
+- Paste all of `core.py` into ChatGPT/Claude and ask: **"What does this code do?
+  Explain it line by line for a high-schooler."**
+- When reading the Track 1 docs, ask AI to **summarize them and quiz you with a
+  few comprehension questions.**
+- When you hit an error you don't understand, paste the **full error text** and
+  ask "what does this mean and how do I fix it?"
 
-### 4.4 要读的官方材料
+### 4.4 Official material to read
 
-- **Track 1 官方说明**：https://untechover-2026-b4d0e3.opensource.unicc.org/track1.html
-  （读不动就让 AI 帮你总结，再针对不懂的地方提问。）
-- 团队的**设计文档**（design doc）——找队长要链接。
-- 本仓库的 **MVP 代码**——就是上面 §3 跑的那套，边跑边读。
-
----
-
-## 5. 团队协作 & 求助
-
-- **进度/卡点**：用团队共享文档记录你在做什么、卡在哪。
-- **每日同步**：约一个固定时间，大家碰一下进度（哪怕 5 分钟）。
-- **聊天频道**：高频使用！环境装不上、git 报错、看不懂代码——**立刻举手**，别硬扛。
-- 求助前先做一件事：**把报错全文 + 你执行的命令**贴出来，这样别人能秒懂。
-
----
-
-## 6. 黑客松前自检清单（开始前逐项打勾）
-
-环境：
-- [ ] `brew --version` 有版本号
-- [ ] `git --version` 有版本号
-- [ ] `python3 --version` 是 3.13.x
-- [ ] `uv --version` 有版本号
-- [ ] `opencode --version` 有版本号
-- [ ] 装好了 VS Code（或 Cursor）
-
-仓库 & git：
-- [ ] 配好 SSH key，`ssh -T git@github.com` 认证通过（或会用 HTTPS）
-- [ ] 成功 `git clone` 了 ssgcheck 仓库
-- [ ] 会用 `git pull` / `git add` / `git commit` / `git push`
-
-跑通 MVP：
-- [ ] `uv sync` 成功
-- [ ] `selftest.py` 跑通（看到"篡改被抓"）
-- [ ] （有 key 的话）`demo.py` 或 `opencode run` 跑通，`audit-trail/decisions.jsonl` 有记录
-
-理解：
-- [ ] 读了 Track 1 官方文档（让 AI 帮你总结过）
-- [ ] 读了 `README.md` 和 `AGENTS.md`
-- [ ] 大致明白"哈希链 = 防篡改留痕"
-
-全部打勾 = 你已经准备好了，黑客松当天可以直接上手 🚀
+- **Track 1 official page:** https://untechover-2026-b4d0e3.opensource.unicc.org/track1.html
+  (If it's heavy going, have AI summarize it, then ask about the parts you don't
+  get.)
+- The team's **design doc** — ask the team lead for the link.
+- This repo's **MVP code** — the same one you ran in §3; read it while you run
+  it.
 
 ---
 
-## 常见报错（Troubleshooting）
+## 5. Teamwork & getting help
 
-| 报错/现象 | 原因 | 解决 |
+- **Progress / blockers:** use a shared team document to track what you're doing
+  and where you're stuck.
+- **Daily sync:** agree on a fixed time to check in (even 5 minutes).
+- **Chat channel:** use it a lot! Can't install something, git error, can't read
+  the code — **raise your hand right away**, don't tough it out.
+- Before asking, do one thing: **paste the full error text + the command you
+  ran**, so people can help instantly.
+
+---
+
+## 6. Pre-hackathon self-check (tick each before day one)
+
+Environment:
+- [ ] `brew --version` prints a version
+- [ ] `git --version` prints a version
+- [ ] `python3 --version` is 3.13.x
+- [ ] `uv --version` prints a version
+- [ ] `opencode --version` prints a version
+- [ ] VS Code (or Cursor) installed
+
+Repo & git:
+- [ ] SSH key set up; `ssh -T git@github.com` authenticates (or you'll use HTTPS)
+- [ ] Successfully `git clone`d the ssgcheck repo
+- [ ] Comfortable with `git pull` / `git add` / `git commit` / `git push`
+
+Run the MVP:
+- [ ] `uv sync` succeeds
+- [ ] `selftest.py` runs (you saw "tampering caught")
+- [ ] (with a key) `demo.py` or `opencode run` works; `audit-trail/decisions.jsonl` has a record
+
+Understanding:
+- [ ] Read the Track 1 official docs (had AI summarize them)
+- [ ] Read `README.md` and `AGENTS.md`
+- [ ] Roughly get "hash chain = tamper-evident record-keeping"
+
+All ticked = you're ready, and you can start coding on day one 🚀
+
+---
+
+## 7. Day one: what to do first
+
+A concrete, beginner-friendly plan for the first day of the hackathon. Don't try
+to "do everything" — follow this order.
+
+**First 30 minutes — get unblocked.**
+- [ ] Re-run the 4 verification commands (§1.8). If any fail, **post in the chat
+      channel immediately** — fixing environment is the #1 day-one time sink, so
+      clear it first.
+- [ ] `cd ssgcheck` and run `git pull` to get the team's latest code.
+- [ ] Say hi in the team channel and confirm your name/role.
+
+**Next 30 minutes — make the project run on your machine.**
+- [ ] `uv sync`
+- [ ] `uv run python mcp-servers/compliance-auditor/selftest.py` (you should see
+      "tampering caught"). If this runs, your setup is genuinely working.
+- [ ] If you have a key, create `.env` (§3.3) and run
+      `uv run python mcp-servers/compliance-auditor/demo.py`.
+
+**Next ~45 minutes — understand, don't just stare.**
+- [ ] Read `README.md`, then `AGENTS.md`, then `core.py`. Paste anything
+      confusing into AI and ask for a line-by-line explanation (§4.3).
+- [ ] Skim `docs/architecture.md` — especially the diagram and the "honest
+      limitations" section, so you know what the tool does **not** claim.
+- [ ] Have AI summarize the [Track 1 page](https://untechover-2026-b4d0e3.opensource.unicc.org/track1.html)
+      and write down 1–2 questions to ask the team.
+
+**Then — sync with the team and pick ONE small task.**
+- [ ] In the team sync, agree on who owns what. Pick **one small, well-defined
+      task** (not "rewrite everything").
+- [ ] Good beginner-friendly first tasks on this project:
+  - add a new keyword/pattern to the catalog in `AGENTS.md` (e.g. detecting
+    `pickle.load` or `eval(`)
+  - add a verbatim legal reference for the privacy/security domains so the report
+    cites it every time
+  - add a small scenario to `demo.py` and run it end to end
+  - improve a section of the report template in `core.py`
+- [ ] Work on your **own branch** (§2.3), commit small and often, push, and open
+      a PR. Ask for a quick review before merging to `main`.
+
+**All day — habits that keep you productive.**
+- Commit small chunks with clear messages; push often so you don't lose work.
+- `git pull` before you start each work block to avoid conflicts.
+- Stuck for more than ~15 minutes? Ask in the channel with the command + full
+  error. Momentum matters more than pride.
+- Keep notes of what you changed — you'll need them for the final report/demo.
+
+> Rule of thumb for day one: **one working setup + one merged small PR** is a
+> great first day. You don't need to be a hero — you need to be unblocked and
+> contributing.
+
+---
+
+## Troubleshooting
+
+| Error / symptom | Cause | Fix |
 |---|---|---|
-| `command not found: brew` | 装完没加 PATH | 跑 §1.1 里那两行 `eval "$(/opt/homebrew/bin/brew shellenv)"` |
-| `command not found: opencode` | 没装成功或 PATH 没刷新 | 重开终端；或用 `npm install -g opencode-ai` 备选 |
-| `python: command not found` | Mac 上是 `python3` 不是 `python` | 用 `python3` |
-| `Permission denied (publickey)`（git clone 时） | SSH key 没配好 | 做 §2.1；或改用 HTTPS 地址克隆 |
-| `uv: command not found` | 没装 uv 或 PATH 问题 | `brew install uv`，重开终端 |
-| `timeout: command not found` | macOS 默认没有 `timeout` 命令 | 用 `gtimeout`（`brew install coreutils`），或直接不加 |
-| OpenCode 报 provider/auth 错误 | 没设 API key | `export DEEPSEEK_API_KEY=...` 或在 `.env` 里写好 |
-| `merge conflict` | 你和队友改了同一处 | 别慌，截图发频道找人带；或先 `git pull` 再解 |
+| `command not found: brew` | PATH not set after install | Run the two `eval "$(/opt/homebrew/bin/brew shellenv)"` lines from §1.1 |
+| `command not found: opencode` | Install failed or PATH not refreshed | Reopen Terminal; or fallback `npm install -g opencode-ai` |
+| `python: command not found` | On Mac it's `python3`, not `python` | Use `python3` |
+| `Permission denied (publickey)` (on git clone) | SSH key not set up | Do §2.1; or clone with the HTTPS address |
+| `uv: command not found` | uv not installed or PATH issue | `brew install uv`, reopen Terminal |
+| `timeout: command not found` | macOS has no `timeout` by default | Use `gtimeout` (`brew install coreutils`), or just omit it |
+| OpenCode shows a provider/auth error | No API key set | `export DEEPSEEK_API_KEY=...` or put it in `.env` |
+| `merge conflict` | You and a teammate edited the same spot | Don't panic; screenshot it in the channel; or `git pull` then resolve |
 
-> 还是不行？**把命令 + 完整报错截图发到聊天频道。** 这不丢人，每个人都是这么过来的。
+> Still stuck? **Post the command + the full error screenshot in the chat
+> channel.** It's not embarrassing — everyone started here.
