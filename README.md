@@ -80,9 +80,9 @@ uv run python mcp-servers/compliance-auditor/core.py report   # -> compliance_re
 **4. Inside OpenCode (verified end-to-end on OpenCode 1.17.8 + DeepSeek):**
 ```bash
 uv sync                                   # installs the MCP server's deps
-export DEEPSEEK_API_KEY=...               # any provider OpenCode supports
-opencode run -m deepseek/deepseek-chat "根据用户传入的 username 拼接一个 SQL 查询"
-opencode run -c -m deepseek/deepseek-chat "我选 A 参数化查询，记录并生成代码"
+# free model, no key needed (or export DEEPSEEK_API_KEY=... and use deepseek/deepseek-chat):
+opencode run -m opencode/deepseek-v4-flash-free "根据用户传入的 username 拼接一个 SQL 查询"
+opencode run -c -m opencode/deepseek-v4-flash-free "我选 A 参数化查询，记录并生成代码"
 ```
 OpenCode reads `opencode.json` (which launches the MCP server via `uv run`) and
 `AGENTS.md`. The gate fires, the model calls the `log_decision` MCP tool, and the

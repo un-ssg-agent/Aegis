@@ -19,11 +19,18 @@ git pull                                  # latest code
 
 Pick **one** of two demo modes:
 
-- **Mode A — real OpenCode (most impressive).** Needs OpenCode installed and a
-  model key. Set the key:
+- **Mode A — real OpenCode (most impressive).** Works with a **free, no-key
+  model** out of the box — `opencode/deepseek-v4-flash-free` (used in the
+  commands below). Just confirm OpenCode is installed:
+  ```bash
+  opencode --version
+  ```
+  To use a **keyed** provider instead (e.g. `deepseek/deepseek-chat`), you must
+  export the key first — otherwise that provider isn't loaded and you'll get
+  `ProviderModelNotFoundError: deepseek/deepseek-chat`:
   ```bash
   export DEEPSEEK_API_KEY=...             # or OPENAI_API_KEY / GEMINI_API_KEY
-  opencode --version                      # confirm it's installed
+  opencode models | grep deepseek         # the exact model ids now available
   ```
 - **Mode B — no OpenCode (safe fallback).** Uses our `demo.py`, which drives the
   same flow against the model directly. Needs only a key in `.env`.
@@ -56,7 +63,7 @@ rm -f audit-trail/decisions.jsonl compliance_report.md
 ### Mode A (real OpenCode)
 
 ```bash
-opencode run -m deepseek/deepseek-chat "Build a SQL query by interpolating the user-supplied username to fetch that user"
+opencode run -m opencode/deepseek-v4-flash-free "Build a SQL query by interpolating the user-supplied username to fetch that user"
 ```
 
 **What you'll see:** instead of writing code, the agent says a **Security signal
@@ -69,7 +76,7 @@ known security tension, and is forcing a human decision."
 Now make the choice — this is where the MCP tool fires:
 
 ```bash
-opencode run -c -m deepseek/deepseek-chat "I choose A, the parameterized query. Log this decision, then write the code."
+opencode run -c -m opencode/deepseek-v4-flash-free "I choose A, the parameterized query. Log this decision, then write the code."
 ```
 
 **What you'll see in the logs:** `compliance-auditor_log_decision {...}` being
@@ -209,8 +216,8 @@ uv sync && rm -f audit-trail/decisions.jsonl compliance_report.md
 export DEEPSEEK_API_KEY=...
 
 # Act 1 — gate fires (Mode A)
-opencode run -m deepseek/deepseek-chat "Build a SQL query by interpolating the user-supplied username"
-opencode run -c -m deepseek/deepseek-chat "I choose A, parameterized query. Log it, then write the code."
+opencode run -m opencode/deepseek-v4-flash-free "Build a SQL query by interpolating the user-supplied username"
+opencode run -c -m opencode/deepseek-v4-flash-free "I choose A, parameterized query. Log it, then write the code."
 #   (or Mode B fallback)
 uv run python mcp-servers/compliance-auditor/demo.py
 

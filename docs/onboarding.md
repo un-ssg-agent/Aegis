@@ -290,10 +290,14 @@ verifies the chain and renders a report.
 
 ```bash
 uv sync
-export DEEPSEEK_API_KEY=your_key        # or the provider/key the organizers give
-opencode run -m deepseek/deepseek-chat "Build a SQL query by interpolating the user-supplied username"
-opencode run -c -m deepseek/deepseek-chat "I choose A, the parameterized query — log it and generate the code"
+# Easiest: a FREE model that needs no API key at all:
+opencode run -m opencode/deepseek-v4-flash-free "Build a SQL query by interpolating the user-supplied username"
+opencode run -c -m opencode/deepseek-v4-flash-free "I choose A, the parameterized query — log it and generate the code"
 ```
+
+> Want to use a keyed provider (e.g. `deepseek/deepseek-chat`) instead? You must
+> `export DEEPSEEK_API_KEY=...` first, or OpenCode won't load that provider and
+> you'll see `ProviderModelNotFoundError`. Run `opencode models` to see valid ids.
 
 OpenCode automatically reads `opencode.json` (which launches our MCP tool via
 `uv run`) and `AGENTS.md` (the gate rules). You'll see the gate fire, the model
