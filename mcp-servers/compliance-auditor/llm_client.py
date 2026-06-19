@@ -57,6 +57,29 @@ def _post(base: str, key: str, body: dict, timeout: int = 60) -> dict:
         return json.loads(resp.read().decode("utf-8"))
 
 
+def provider_names() -> list:
+    """Names of providers that currently have a key — the 'panel' of models."""
+    env = load_env()
+    return [name for name, _b, keyname, _m in PROVIDERS
+            if env.get(keyname) or os.environ.get(keyname)]
+
+
+def chat_one(name: str, messages: list, temperature: float = 0.0):
+    """Call ONE specific provider (no fallback). Returns (message, label).
+    Used to score with each panel model independently."""
+    env = load_env()
+    for n, base, keyname, model in PROVIDERS:
+        if n != name:
+            continue
+        key = env.get(keyname) or os.environ.get(keyname)
+        if not key:
+            raise LLMError(f"{name}: no key")
+        data = _post(base, key, {"model": model, "messages": messages,
+                                 "temperature": temperature})
+        return data["choices"][0]["message"], f"{n}:{model}"
+    raise LLMError(f"unknown provider {name}")
+
+
 def chat(messages: list, tools: list | None = None, temperature: float = 0.0):
     """Return (assistant_message_dict, provider_name). Iterates providers
     until one succeeds; raises LLMError if all fail."""

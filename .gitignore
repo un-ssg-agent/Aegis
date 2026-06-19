@@ -219,3 +219,6 @@ __marimo__/
 
 # Project artifact (regenerable from the audit trail)
 compliance_report.md
+
+# archived audit runs (runtime, never delete the live trail — archive it)
+audit-trail/archive/

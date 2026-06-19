@@ -38,6 +38,7 @@ docs/architecture.md                  # design, hash chain, threat model, limits
 docs/design.md                        # full design doc: CUJs, components, roadmap
 docs/advanced.md                      # advanced topics + things to explore next
 docs/demo.md                          # ~5-min live demo runbook (incl. manual tamper)
+docs/monitor.md                       # the monitor web app: setup/run/use/customize measures
 docs/onboarding.md                    # beginner setup + day-one guide for teammates
 docs/sample-report.md                 # a generated Model Card (sample)
 audit-trail/decisions.jsonl           # the tamper-evident paper trail (runtime)

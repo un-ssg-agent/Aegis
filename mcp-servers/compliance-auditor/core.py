@@ -172,6 +172,16 @@ def render_model_card(root: str) -> str:
                 L.append(f"- Legal anchor (verbatim): {e['ai_act_ref']}")
             L.append(f"- Record hash: `{e['hash']}`")
             L.append("")
+    cs = [e for e in entries if e.get("domain") == "child-safety"]
+    if cs:
+        L.append("## 3b. Child-safety safeguards (UN CRC / UNICEF)")
+        L.append("Explicit safeguarding choices recorded for child-facing systems:")
+        for e in cs:
+            L.append(f"- **{e['trigger']}**")
+            L.append(f"  - choice (escalation / retention / evaluation): {e['user_choice']}")
+            if e.get("ai_act_ref"):
+                L.append(f"  - basis: {e['ai_act_ref']}")
+        L.append("")
     L.append("## 4. Known limitations")
     L.append("- The compliance gate is **prompt-enforced**: the chain proves "
              "that *what was logged* was not altered, but cannot prove that "

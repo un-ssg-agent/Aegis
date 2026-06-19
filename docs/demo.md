@@ -35,10 +35,14 @@ Pick **one** of two demo modes:
 - **Mode B — no OpenCode (safe fallback).** Uses our `demo.py`, which drives the
   same flow against the model directly. Needs only a key in `.env`.
 
-**Start from a clean trail** so the demo reads cleanly:
+**Start from a clean trail** — but never *delete* the audit log (deleting a
+tamper-evident trail defeats its purpose). **Archive it instead:**
 
 ```bash
-rm -f audit-trail/decisions.jsonl compliance_report.md
+mkdir -p audit-trail/archive
+[ -f audit-trail/decisions.jsonl ] && mv audit-trail/decisions.jsonl \
+  "audit-trail/archive/decisions.$(date +%s).jsonl"
+rm -f compliance_report.md   # the report is regenerable, safe to delete
 ```
 
 > 💡 Tip: have two terminal panes open — one to run commands, one with the file
@@ -231,8 +235,10 @@ accept stays a human judgment."
 ## Cheat sheet (all commands in order)
 
 ```bash
-# setup
-uv sync && rm -f audit-trail/decisions.jsonl compliance_report.md
+# setup (archive the old trail, don't delete it)
+uv sync && mkdir -p audit-trail/archive
+[ -f audit-trail/decisions.jsonl ] && mv audit-trail/decisions.jsonl "audit-trail/archive/decisions.$(date +%s).jsonl"
+rm -f compliance_report.md
 export DEEPSEEK_API_KEY=...
 
 # Act 1 — gate fires (Mode A)
@@ -268,7 +274,7 @@ uv run --extra fairness python mcp-servers/compliance-auditor/fairness_demo.py
 |---|---|
 | No internet / model is down | Use **Mode B** (`demo.py`); it falls back across DeepSeek/OpenAI/Gemini. Worst case, skip Act 1 and demo Acts 3–6 (backend needs no network). |
 | `opencode` provider/auth error | `export DEEPSEEK_API_KEY=...` (or the organizers' key) before running |
-| Demo trail is messy from rehearsing | `rm -f audit-trail/decisions.jsonl` and start Act 1 again |
+| Demo trail is messy from rehearsing | **Archive, don't delete:** `mv audit-trail/decisions.jsonl audit-trail/archive/decisions.$(date +%s).jsonl`, then start Act 1 again |
 | `verify` says BROKEN before you tampered | You left edits from a previous take — regenerate the trail (clean + re-run Act 1) |
 | Want a guaranteed-working backend demo with zero deps | `uv run python mcp-servers/compliance-auditor/selftest.py` — self-contained proof |
 

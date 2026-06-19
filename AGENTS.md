@@ -32,6 +32,26 @@ data schema already in context for these signals:
   as `test_results` when you call `log_decision`. The scan surfaces facts, never
   a verdict — the human still chooses which disparity to accept.
 
+**Child safety (UN CRC / UNICEF; high-risk)**
+- building a child-safety classifier or moderation system, a chatbot / companion
+  for minors, grooming / self-harm / bullying / abuse / distress detection, or
+  any system that stores or processes children's conversations.
+- When this fires, the options you present MUST force explicit choices on THREE
+  axes, each with its tradeoff, and you log all three (use `domain="child-safety"`):
+  1. **Escalation policy** — fully automated vs human-in-the-loop review. A false
+     negative can leave a child without support; a false positive triggers
+     unnecessary surveillance/intervention. The FP↔FN balance is a safeguarding
+     decision, not a technical default.
+  2. **Data retention** — full conversations / anonymised excerpts / metadata
+     only / no content by default. (Safety needs context; storing children's
+     conversations is itself a privacy harm.)
+  3. **Evaluation** — disaggregated by age / language / dialect / disability /
+     culture, vs average-only. (A model fine "on average" can fail the children
+     who most need help.)
+- Legal anchor (verbatim, not recalled): UN Convention on the Rights of the
+  Child, Articles 3, 12, 16, 19, 34; EU AI Act (safety-/rights-sensitive,
+  potentially high-risk depending on use).
+
 ## What you must do when it fires (CRITICAL — do not skip)
 
 1. **Do NOT generate code yet.** Stop and tell the developer which signal
