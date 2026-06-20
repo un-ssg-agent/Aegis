@@ -1,0 +1,54 @@
+# Render Blueprint — ssgcheck monitor backend (monitor/app.py)
+#
+# Deploy:
+#   1. Commit this file to the repo root as `render.yaml` and push.
+#   2. Render dashboard → New + → Blueprint → connect `un-ssg-agent/ssgcheck` → Apply.
+#   3. When prompted, paste at least ONE provider key (they're marked sync:false,
+#      so Render asks for them instead of storing them in this file).
+#   4. Copy the service URL (e.g. https://ssgcheck-monitor.onrender.com) and set it
+#      as BACKEND_URL in your Vercel project so the frontend proxy points at it.
+
+services:
+  - type: web
+    name: ssgcheck-monitor
+    runtime: python
+    branch: main
+    region: oregon
+
+    # 'starter' ($7/mo) is required for the persistent disk below (the audit chain).
+    # To test for $0: change this to 'free' AND delete the `disk:` block —
+    # free instances have no disk and sleep after ~15 min idle (cold starts wipe
+    # the in-memory chain, but the demo still runs).
+    plan: starter
+
+    # The monitor only needs these three — core.py and llm_client.py are pure stdlib.
+    buildCommand: pip install "fastapi>=0.110" "uvicorn[standard]>=0.27" "pydantic>=2.0"
+
+    # app.py hardcodes host 127.0.0.1 (localhost-only). Launch uvicorn directly on
+    # 0.0.0.0 so Render's router can reach it. --app-dir monitor makes `app:app`
+    # resolve to monitor/app.py without editing your code.
+    startCommand: uvicorn app:app --app-dir monitor --host 0.0.0.0 --port $PORT
+
+    healthCheckPath: /
+
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.5"
+      - key: ALARM_THRESHOLD
+        value: "0.6"
+      # Provide at least one of the following in the Render dashboard (Environment tab).
+      # The 3-model panel runs with whichever keys are present; missing ones are skipped.
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: DEEPSEEK_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+
+    # Persistent disk mounted exactly where core.py writes the hash chain
+    # (<repo>/audit-trail/), so the tamper-evident audit trail survives restarts
+    # and redeploys — the project's actual moat.
+    disk:
+      name: audit-trail
+      mountPath: /opt/render/project/src/audit-trail
+      sizeGB: 1
