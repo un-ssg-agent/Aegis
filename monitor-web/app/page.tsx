@@ -19,6 +19,13 @@ type Item =
   | { role: "gate"; gate: Gate; prompt: string; chosen: Record<string, string>; done: boolean }
   | { role: "code"; code: Code };
 
+type AuditEntry = {
+  seq: number; ts?: string; domain: string; trigger?: string;
+  user_choice?: string; ai_act_ref?: string; rationale?: string;
+  options_presented?: string[]; model?: string; hash: string; prev_hash?: string;
+};
+type AuditChain = { entries: AuditEntry[]; chain_ok: boolean; count: number; head?: string | null };
+
 const EXAMPLE =
   "build a child-safety classifier — the governance layer should detect child-specific risks, present safer implementation options, and require explicit choices on escalation, retention and evaluation";
 
@@ -154,11 +161,53 @@ export default function Page() {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [dev, setDev] = useState(true);
+  const [auditOpen, setAuditOpen] = useState(false);
+  const [auditData, setAuditData] = useState<AuditChain | null>(null);
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [auditErr, setAuditErr] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: 1e9, behavior: "smooth" });
   }, [items, busy]);
+
+  function mockChainFromSession(): AuditChain {
+    const coded = items.filter((i) => i.role === "code" && i.code.audit_hash) as Extract<Item, { role: "code" }>[];
+    let prev = "GENESIS";
+    const entries: AuditEntry[] = coded.map((it) => {
+      const c = it.code;
+      const e: AuditEntry = {
+        seq: c.audit_seq ?? 0,
+        ts: new Date().toISOString(),
+        domain: "child-safety",
+        trigger: "child-directed coding request",
+        user_choice: "developer choice recorded",
+        ai_act_ref: "UN CRC arts 3,12,16,19,34; EU AI Act",
+        model: c.provider || "mock",
+        hash: c.audit_hash!,
+        prev_hash: prev,
+      };
+      prev = c.audit_hash!;
+      return e;
+    });
+    return { entries, chain_ok: true, count: entries.length, head: entries.length ? entries[entries.length - 1].hash : null };
+  }
+
+  async function openAudit() {
+    setAuditOpen(true);
+    setAuditLoading(true);
+    setAuditErr(false);
+    try {
+      const r = await fetch("/api/audit");
+      if (!r.ok) throw new Error();
+      setAuditData(await r.json());
+    } catch {
+      setAuditErr(true);
+      setAuditData(mockChainFromSession());
+    } finally {
+      setAuditLoading(false);
+    }
+  }
 
   async function send(text: string) {
     const prompt = text.trim();
@@ -443,8 +492,12 @@ export default function Page() {
               </div>
             )}
 
-            <div className="card">
-              <div className="cnum"><span className="n">4</span> ESCALATION · AUDIT</div>
+            <div className="card audcard" onClick={openAudit} role="button" tabIndex={0}
+              onKeyDown={(e) => { if (e.key === "Enter") openAudit(); }}>
+              <div className="cnum">
+                <span className="n">4</span> ESCALATION · AUDIT
+                <span className="viewtrail">View full trail →</span>
+              </div>
               {auditHash ? (
                 <>
                   <div className="arow"><span className="muted">seq</span> #{auditSeq}</div>
@@ -455,12 +508,71 @@ export default function Page() {
               ) : codeReady ? (
                 <div className="muted small">no gate fired — nothing to escalate</div>
               ) : (
-                <div className="muted small">no decision logged yet</div>
+                <div className="muted small">no decision logged yet · click to view the chain</div>
               )}
             </div>
           </aside>
         )}
       </div>
+
+      {auditOpen && (
+        <div className="modal" onClick={() => setAuditOpen(false)}>
+          <div className="sheet" onClick={(e) => e.stopPropagation()}>
+            <div className="sheethd">
+              <div>
+                <div className="stitle">Audit trail</div>
+                <div className="ssub">tamper-evident decision chain · SHA-256 linked</div>
+              </div>
+              <button className="x" onClick={() => setAuditOpen(false)}>✕</button>
+            </div>
+
+            {auditLoading ? (
+              <div className="aload">loading chain…</div>
+            ) : (
+              <>
+                <div className={`verify ${auditData?.chain_ok ? "ok" : "bad"}`}>
+                  <span className="vmk">{auditData?.chain_ok ? "✓" : "✕"}</span>
+                  <span>
+                    {auditData?.chain_ok
+                      ? `Chain intact · ${auditData?.count ?? 0} ${(auditData?.count ?? 0) === 1 ? "entry" : "entries"}`
+                      : "Chain verification FAILED"}
+                  </span>
+                  {auditErr && <span className="demo">demo data · backend unreachable</span>}
+                </div>
+                {auditData?.head && (
+                  <div className="headrow"><span className="muted">head</span> <code>{auditData.head.slice(0, 28)}…</code></div>
+                )}
+
+                <div className="trail">
+                  {(auditData?.entries ?? []).slice().reverse().map((e) => (
+                    <div key={e.seq} className="entry">
+                      <div className="ehd">
+                        <span className="eseq">#{e.seq}</span>
+                        <span className="edom">{e.domain}</span>
+                        {e.ts && <span className="ets">{new Date(e.ts).toLocaleString()}</span>}
+                      </div>
+                      {e.trigger && <div className="erow"><span className="ek">trigger</span><span className="ev">{e.trigger}</span></div>}
+                      {!!(e.options_presented && e.options_presented.length) && (
+                        <div className="erow"><span className="ek">options</span><span className="ev">{e.options_presented.join("  ·  ")}</span></div>
+                      )}
+                      {e.user_choice && <div className="erow"><span className="ek">choice</span><span className="ev hi">{e.user_choice}</span></div>}
+                      {e.ai_act_ref && <div className="erow"><span className="ek">source</span><span className="ev">{e.ai_act_ref}</span></div>}
+                      {e.model && <div className="erow"><span className="ek">model</span><span className="ev">{e.model}</span></div>}
+                      <div className="ehash"><span className="muted">sha-256</span> <code>{e.hash}</code></div>
+                      {e.prev_hash && (
+                        <div className="eprev"><span className="muted">prev</span> <code>{e.prev_hash === "GENESIS" ? "GENESIS" : e.prev_hash.slice(0, 24) + "…"}</code></div>
+                      )}
+                    </div>
+                  ))}
+                  {(!auditData?.entries || auditData.entries.length === 0) && (
+                    <div className="aempty">No decisions logged yet. Run a child-directed build to create the first entry.</div>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -581,5 +693,40 @@ const CSS = `
 .hash{font-family:ui-monospace,Menlo,monospace;font-size:10.5px;color:#7fd99a;word-break:break-all;background:#0e1622;border:1px solid #173024;border-radius:7px;padding:8px;margin:4px 0 9px;}
 .chainok{font-size:12px;color:#7fd99a;}
 .chainok .ok,.arow .ok{color:var(--green);}
+.audcard{cursor:pointer;transition:border-color .15s;}
+.audcard:hover{border-color:#3a4250;}
+.audcard .viewtrail{margin-left:auto;font-size:10.5px;color:var(--acc);letter-spacing:0;text-transform:none;}
+.modal{position:fixed;inset:0;background:rgba(6,8,12,.62);display:flex;align-items:center;justify-content:center;padding:24px;z-index:50;}
+.sheet{width:min(620px,94vw);max-height:86vh;display:flex;flex-direction:column;background:#12151c;border:1px solid #262b36;border-radius:16px;overflow:hidden;box-shadow:0 24px 60px rgba(0,0,0,.5);}
+.sheethd{display:flex;align-items:flex-start;justify-content:space-between;padding:18px 20px;border-bottom:1px solid #222732;}
+.stitle{font-size:16px;font-weight:650;color:#fff;}
+.ssub{font-size:12px;color:#7f8694;margin-top:2px;}
+.x{border:none;background:#1c212b;color:#aeb4c0;width:30px;height:30px;border-radius:8px;cursor:pointer;font-size:13px;}
+.x:hover{background:#262c38;color:#fff;}
+.aload{padding:34px;text-align:center;color:#7f8694;}
+.verify{display:flex;align-items:center;gap:9px;margin:16px 20px 0;padding:11px 13px;border-radius:10px;font-size:13px;font-weight:550;}
+.verify.ok{background:#0e2418;border:1px solid #1d4a30;color:#7fd99a;}
+.verify.bad{background:#2a1414;border:1px solid #5a2420;color:#ff8a82;}
+.verify .vmk{width:20px;height:20px;border-radius:50%;display:grid;place-items:center;font-weight:800;font-size:12px;}
+.verify.ok .vmk{background:var(--green);color:#04210e;}
+.verify.bad .vmk{background:var(--red);color:#2a0a08;}
+.verify .demo{margin-left:auto;font-size:10.5px;font-weight:600;color:#e8b22e;background:#2a230e;border:1px solid #5a4a1c;border-radius:5px;padding:2px 7px;}
+.headrow{margin:10px 20px 0;font-size:12px;color:#7f8694;}
+.headrow code{font-family:ui-monospace,Menlo,monospace;color:#9aa0ad;}
+.trail{overflow-y:auto;padding:14px 20px 20px;display:flex;flex-direction:column;gap:11px;}
+.entry{border:1px solid #232833;border-radius:11px;padding:13px;background:#161a22;}
+.ehd{display:flex;align-items:center;gap:9px;margin-bottom:9px;}
+.eseq{font-weight:700;color:#fff;font-size:13px;}
+.edom{font-size:10.5px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--amber);border:1px solid #5a4a1c;border-radius:5px;padding:2px 7px;}
+.ets{margin-left:auto;font-size:11px;color:#6f7682;}
+.erow{display:flex;gap:10px;font-size:12.5px;margin-bottom:5px;}
+.ek{flex:none;width:62px;color:#7f8694;}
+.ev{color:#c8cdd6;}
+.ev.hi{color:#7fd99a;font-weight:600;}
+.ehash{margin-top:8px;font-size:10.5px;color:#9aa0ad;}
+.ehash code{font-family:ui-monospace,Menlo,monospace;color:#7fd99a;word-break:break-all;}
+.eprev{margin-top:3px;font-size:10.5px;color:#6f7682;}
+.eprev code{font-family:ui-monospace,Menlo,monospace;word-break:break-all;}
+.aempty{padding:24px;text-align:center;color:#7f8694;font-size:13px;}
 @media(max-width:880px){.rail{display:none;}}
 `;

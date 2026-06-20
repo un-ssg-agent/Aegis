@@ -128,7 +128,7 @@ class GenerateIn(BaseModel):
 @app.get("/")
 def index():
     return {"service": "ssgcheck-monitor", "ui": "run monitor-web (Next.js) on :3000",
-            "endpoints": ["/api/generate", "/assess", "/api/alarms", "/api/ack"]}
+            "endpoints": ["/api/generate", "/api/audit", "/assess", "/api/alarms", "/api/ack"]}
 
 
 @app.post("/api/generate")
@@ -148,6 +148,16 @@ def assess_endpoint(body: AssessIn):
     if body.kind not in MEASURES:
         return JSONResponse({"error": "kind must be 'code' or 'conversation'"}, 400)
     return assess(body.kind, body.content)
+
+
+@app.get("/api/audit")
+def api_audit():
+    """The full tamper-evident decision chain (every entry) + verification status.
+    Unlike /api/alarms (escalated monitor alarms only), this returns ALL decisions,
+    including the coding-agent's child-safety gate decisions."""
+    entries = core._read_all(ROOT)
+    ok, msg, n, head = core.verify_chain(ROOT)
+    return {"entries": entries, "chain_ok": ok, "chain": msg, "count": n, "head": head}
 
 
 @app.get("/api/alarms")
