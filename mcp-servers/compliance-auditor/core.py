@@ -90,6 +90,17 @@ def append_decision(
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    # Autosave a readable projection next to the raw chain. Best-effort: the
+    # .jsonl is the authoritative record, so a narrative-write failure must
+    # never break the append above.
+    try:
+        narrative_path = os.path.join(root, "audit-trail", "narrative.md")
+        with open(narrative_path, "w", encoding="utf-8") as f:
+            f.write(render_narrative(root))
+    except Exception:
+        pass
+
     return record
 
 
@@ -205,7 +216,53 @@ def render_model_card(root: str) -> str:
     L.append("")
     return "\n".join(L)
 
+def render_narrative(root: str) -> str:
+    """Deterministically render the audit trail as readable prose — one
+    paragraph per decision. Like render_model_card(), this is a faithful
+    projection of the chain (no LLM), anchored to the verified head hash, so
+    the narrative stays auditable rather than becoming an unverifiable story.
+    """
+    entries = _read_all(root)
+    ok, msg, n, head = verify_chain(root)
 
+    def _when(ts: str) -> str:
+        try:
+            return datetime.fromisoformat(ts).strftime("%Y-%m-%d %H:%M UTC")
+        except ValueError:
+            return ts
+
+    L: list[str] = []
+    L.append("# Compliance audit trail — narrative")
+    L.append("")
+    status = "intact and verified" if ok else f"BROKEN — {msg}"
+    L.append(f"This account is generated from the tamper-evident audit trail, "
+             f"which is currently **{status}**. It describes {n} recorded "
+             f"decision(s), anchored to chain head `{head}`. Every statement "
+             f"below is traceable to `audit-trail/decisions.jsonl`.")
+    L.append("")
+    if not entries:
+        L.append("_No decisions have been recorded yet._")
+        return "\n".join(L) + "\n"
+
+    for e in entries:
+        opts = e.get("options_presented") or []
+        opts_text = ", ".join(str(o) for o in opts) if opts else "no alternatives"
+        s = (f"On {_when(e['ts'])}, a {e['domain']} concern was flagged "
+             f"(entry #{e['seq']}): {e['trigger']}. "
+             f"The developer was shown {len(opts)} option(s) — {opts_text} — "
+             f"with the tradeoff that {e['implications']}. "
+             f"They chose: {e['user_choice']}.")
+        if e.get("rationale"):
+            s += f" Their stated reason was that {e['rationale']}"
+            s = s.rstrip(".") + "."
+        if e.get("test_results"):
+            s += f" Recorded test/scan results: {e['test_results']}."
+        if e.get("ai_act_ref"):
+            s += f" The applicable legal anchor was {e['ai_act_ref']}."
+        s += f" This decision is sealed under record hash `{e['hash']}`."
+        L.append(s)
+        L.append("")
+    return "\n".join(L)
 def _cli(argv: list[str]) -> int:
     root = os.environ.get("COMPLIANCE_ROOT", os.getcwd())
     cmd = argv[1] if len(argv) > 1 else "verify"
@@ -219,6 +276,12 @@ def _cli(argv: list[str]) -> int:
         dest = os.path.join(root, argv[2] if len(argv) > 2 else "compliance_report.md")
         with open(dest, "w", encoding="utf-8") as f:
             f.write(render_model_card(root))
+        print(f"✅ wrote {dest}")
+        return 0
+    if cmd == "narrate":
+        dest = os.path.join(root, argv[2] if len(argv) > 2 else "audit-trail/narrative.md")
+        with open(dest, "w", encoding="utf-8") as f:
+            f.write(render_narrative(root))
         print(f"✅ wrote {dest}")
         return 0
     print(f"usage: core.py [verify|report [path]]", file=sys.stderr)
