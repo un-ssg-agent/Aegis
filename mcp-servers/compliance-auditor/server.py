@@ -34,10 +34,20 @@ def log_decision(
 ) -> str:
     """Append a tamper-evident decision to the audit trail.
 
-    Call this AFTER the developer has chosen among the presented options and
-    BEFORE generating the final code. Do NOT invent the hash — this tool
-    computes the real SHA-256 chain. `domain` is one of
-    privacy|security|fairness. `options_presented` must list >= 2 alternatives.
+    Call this whenever a governed decision is made and BEFORE you act on it —
+    before replying to a child, or before generating code. The trail does NOT
+    update on its own; if you do not call this tool, nothing is recorded. Do
+    NOT invent the hash — this tool computes the real SHA-256 chain.
+
+    `domain` is one of: child-safety | privacy | security | fairness.
+
+    Child-facing runtime: call this BEFORE you reply on any interaction whose
+    internal risk assessment reaches a safeguarding level (S4+). Record
+    METADATA ONLY — never put the child's full message in the record (data
+    minimization). Example: domain="child-safety",
+    trigger="conversation <id>: risk_level=S5 overall=8.0 signals=[...]",
+    options_presented=["SAFE-HOLD (escalation pending)", "continue normally"],
+    user_choice="SAFE-HOLD". `options_presented` must list >= 2 alternatives.
     """
     rec = core.append_decision(
         ROOT, domain, trigger, options_presented, implications, user_choice,
