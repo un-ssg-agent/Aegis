@@ -1,483 +1,585 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 
-/* ───────────────────────── types (match monitor/app.py) ───────────────────────── */
-type Panel = { provider: string; scores: Record<string, number>; overall: number; reason: string };
-type Result = {
-  kind: string; n_models: number; panel: Panel[]; by_measure: Record<string, number>;
-  aggregate: number; threshold: number; alarm: boolean; errors?: string[];
-  audit_seq?: number; audit_hash?: string;
+/* ───────── types (match monitor/agent.py output contract) ───────── */
+type Opt = { id: string; label: string; tradeoff: string };
+type Decision = { id: string; question: string; source: string; options: Opt[] };
+type Gate = {
+  phase: "gate"; message: string; flagged: string[];
+  decisions: Decision[]; provider?: string;
 };
-type Mode = "conversation" | "code";
-type Who = "Child" | "Adult";
-type ChatMsg = { role: "user" | "verdict"; text?: string; mode?: Mode; who?: Who; res?: Result };
-type StageDef = { k: string; lab: string; tag?: string; xf?: boolean; esc?: boolean };
-type Stage = StageDef & { state: "idle" | "run" | "done"; lab: string };
+type Cite = { tag: string; text: string };
+type Code = {
+  phase: "code"; message: string; language: string; code: string;
+  explanation: string; citations?: Cite[];
+  audit_seq?: number; audit_hash?: string; provider?: string;
+};
+type Item =
+  | { role: "user"; text: string }
+  | { role: "gate"; gate: Gate; prompt: string; chosen: Record<string, string>; done: boolean }
+  | { role: "code"; code: Code };
 
-const MEASURES: Record<Mode, string[]> = {
-  code: ["fairness", "privacy", "security"],
-  conversation: ["grooming", "self_harm", "pii_exposure", "distress"],
-};
-const PROVIDERS = ["DeepSeek", "OpenAI", "Gemini"];
-const THRESHOLD = 0.6;
-const AI_ACT: Record<Mode, string> = {
-  code: "EU AI Act high-risk (Annex III) / UNESCO AI ethics",
-  conversation: "UN CRC arts 3,12,16,19,34; EU AI Act (rights-sensitive)",
-};
-const CITES: Record<Mode, [string, string][]> = {
-  code: [["EU AI Act", "Annex III high-risk duties"], ["UNESCO", "AI ethics — fairness"], ["Fairlearn", "group-fairness metrics"]],
-  conversation: [["UN CRC art.19", "protection from abuse"], ["UN CRC art.34", "protection from exploitation"], ["EU AI Act", "minors' data, rights-sensitive"]],
-};
-const STAGE_DEFS: StageDef[] = [
-  { k: "input", lab: "Input intercepted" },
-  { k: "scan", lab: "Sensitive-signal scan", tag: "LLM" },
-  { k: "panel", lab: "Risk panel · 3 models", tag: "LLM" },
-  { k: "cite", lab: "Citation grounding", xf: true },
-  { k: "thresh", lab: "Threshold check" },
-  { k: "esc", lab: "Escalation → human", esc: true },
-  { k: "audit", lab: "Audit append" },
-  { k: "report", lab: "Compliance report" },
-];
-const CHIPS: Record<Mode, { b: string; t: string }[]> = {
-  conversation: [
-    { b: "Benign", t: "hey, did you finish the math homework yet?" },
-    { b: "Escalates", t: "don't tell your parents — let's keep this our little secret, ok?" },
-  ],
-  code: [
-    { b: "Benign", t: "def add(a, b):\n    return a + b" },
-    { b: "Escalates", t: "if applicant.race == 'white':\n    score += 20  # boost\nlog(applicant.ssn)" },
-  ],
-};
+const EXAMPLE =
+  "build a child-safety classifier — the governance layer should detect child-specific risks, present safer implementation options, and require explicit choices on escalation, retention and evaluation";
 
-const tier = (v: number) => (v >= 0.6 ? { t: "HIGH", c: "var(--high)" } : v >= 0.3 ? { t: "MED", c: "var(--med)" } : { t: "LOW", c: "var(--low)" });
-const barColor = (v: number) => (v >= 0.6 ? "var(--high)" : v >= 0.3 ? "var(--med)" : "var(--green)");
-const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/* ───────── mock fallback (demo resilience if backend/LLM is down) ───────── */
+const CHILD_RE = /child|kid|minor|under ?18|teen|student|pupil|coppa|under-?age|school|toddler|infant|nursery/i;
 
-/* local fallback so a demo never dies if the backend / a key is unavailable */
-function mockScore(kind: Mode, content: string): Result {
-  const t = content.toLowerCase();
-  const hits: Record<string, number> = {
-    fairness: /race|gender|ethnic|boost|\bwhite\b|\bmale\b/.test(t) ? 0.55 : 0.05,
-    privacy: /ssn|social security|passport|email|phone|address|log\(/.test(t) ? 0.6 : 0.08,
-    security: /eval\(|exec\(|password|secret|os\.system|subprocess/.test(t) ? 0.5 : 0.07,
-    grooming: /secret|don'?t tell|our little|just between us|alone|meet up/.test(t) ? 0.7 : 0.05,
-    self_harm: /hurt myself|end it|worthless|give up|can'?t go on/.test(t) ? 0.65 : 0.04,
-    pii_exposure: /address|school|phone|where do you live|real name/.test(t) ? 0.45 : 0.06,
-    distress: /scared|alone|sad|nobody|hate myself|afraid/.test(t) ? 0.4 : 0.05,
+function mockGate(): Gate {
+  return {
+    phase: "gate",
+    provider: "mock",
+    message:
+      "This builds software directed at or foreseeably used by children, so the governance gate engages before any code is written. Choose how each safeguard should be implemented.",
+    flagged: [
+      "Child-directed AI system (UN CRC art. 3 — best interests of the child)",
+      "Processes data about minors (EU AI Act, rights-sensitive)",
+      "Automated decisions affecting children need human oversight",
+    ],
+    decisions: [
+      {
+        id: "escalation",
+        question: "How are low-confidence / high-risk classifications handled?",
+        source: "EU AI Act Art. 14 — human oversight for high-risk AI",
+        options: [
+          { id: "a", label: "Escalate to a human reviewer below a confidence threshold", tradeoff: "Higher safety; adds review latency + staffing." },
+          { id: "b", label: "Auto-decide, log every call for later audit", tradeoff: "Lower latency; weaker real-time oversight." },
+        ],
+      },
+      {
+        id: "retention",
+        question: "How long is child data retained?",
+        source: "UN CRC art. 16 (privacy) · GDPR-K / AADC data minimization",
+        options: [
+          { id: "a", label: "Process in-memory, retain nothing past the decision", tradeoff: "Strongest privacy; no retraining data, harder debugging." },
+          { id: "b", label: "Retain hashed features 30 days for evaluation", tradeoff: "Enables eval; expands the data-protection surface." },
+        ],
+      },
+      {
+        id: "evaluation",
+        question: "What fairness evaluation gates release?",
+        source: "EU AI Act Annex III · Fairlearn group-fairness metrics",
+        options: [
+          { id: "a", label: "Block release until subgroup parity is within tolerance", tradeoff: "Fairness assured; slower to ship." },
+          { id: "b", label: "Ship with a monitored fairness dashboard", tradeoff: "Faster; relies on post-deployment vigilance." },
+        ],
+      },
+    ],
   };
-  const ms = MEASURES[kind];
-  const panel: Panel[] = PROVIDERS.map((p) => {
-    const scores: Record<string, number> = {}; let mx = 0;
-    ms.forEach((m) => { const j = Math.max(0, Math.min(1, (hits[m] || 0) + (Math.random() * 0.18 - 0.09))); scores[m] = +j.toFixed(2); mx = Math.max(mx, j); });
-    return { provider: p, scores, overall: +mx.toFixed(2), reason: mx >= 0.6 ? "Clear policy-relevant risk." : mx >= 0.3 ? "Borderline signals." : "No material risk." };
-  });
-  const aggregate = +(panel.reduce((s, p) => s + p.overall, 0) / panel.length).toFixed(3);
-  const by_measure: Record<string, number> = {}; ms.forEach((m) => (by_measure[m] = +Math.max(...panel.map((p) => p.scores[m])).toFixed(2)));
-  const alarm = aggregate >= THRESHOLD;
-  const out: Result = { kind, n_models: 3, panel, by_measure, aggregate, threshold: THRESHOLD, alarm };
-  if (alarm) { out.audit_seq = Math.floor(Math.random() * 900 + 100); out.audit_hash = Array.from({ length: 32 }, () => "0123456789abcdef"[Math.floor(Math.random() * 16)]).join(""); }
-  return out;
+}
+function mockHash() {
+  const h = "0123456789abcdef";
+  let s = "";
+  for (let i = 0; i < 64; i++) s += h[Math.floor(Math.random() * 16)];
+  return s;
+}
+function mockCode(gated: boolean): Code {
+  const code = `"""Child-safety text classifier — generated under AGENTS.md governance.
+
+Safeguards wired in per the developer's choices:
+  - escalation: low-confidence predictions routed to human review
+  - retention : features processed in-memory; nothing persisted
+  - evaluation: subgroup fairness checked before release
+"""
+from dataclasses import dataclass
+
+REVIEW_THRESHOLD = 0.75          # below this confidence -> human review (AI Act Art.14)
+
+
+@dataclass
+class Decision:
+    label: str
+    confidence: float
+    needs_human_review: bool
+
+
+class ChildSafetyClassifier:
+    def __init__(self, model):
+        self._model = model      # injected; no child data stored on the instance
+
+    def classify(self, text: str) -> Decision:
+        # in-memory only: 'text' is never logged or persisted (CRC art.16)
+        label, confidence = self._model.predict(text)
+        return Decision(
+            label=label,
+            confidence=confidence,
+            needs_human_review=confidence < REVIEW_THRESHOLD,
+        )
+
+
+def evaluate_fairness(clf, samples, groups, tolerance=0.05) -> bool:
+    """Gate release on subgroup parity (Fairlearn-style)."""
+    rates = {}
+    for g in set(groups):
+        sub = [s for s, gg in zip(samples, groups) if gg == g]
+        flagged = sum(clf.classify(s).label == "unsafe" for s in sub)
+        rates[g] = flagged / max(len(sub), 1)
+    return (max(rates.values()) - min(rates.values())) <= tolerance
+`;
+  return {
+    phase: "code",
+    provider: "mock",
+    message: gated
+      ? "Generated with your chosen safeguards wired in. The decision was written to the audit trail before the code was returned."
+      : "Generated. This request didn't trigger the child-safety gate, so it ran as ordinary development work.",
+    language: "python",
+    code,
+    explanation:
+      "Confidence below the review threshold routes to a human (escalation); inputs are processed in-memory and never persisted (retention); release is gated on subgroup parity (evaluation).",
+    citations: [
+      { tag: "EU AI Act Art. 14", text: "human oversight for high-risk AI" },
+      { tag: "UN CRC art. 16", text: "child's right to privacy" },
+      { tag: "Fairlearn", text: "group-fairness evaluation" },
+    ],
+    ...(gated ? { audit_seq: Math.floor(Math.random() * 90) + 10, audit_hash: mockHash() } : {}),
+  };
 }
 
+/* ───────── API ───────── */
+async function callAgent(prompt: string, choices?: Record<string, string>) {
+  const r = await fetch("/api/generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt, choices: choices || {} }),
+  });
+  if (!r.ok) throw new Error(`backend ${r.status}`);
+  const j = await r.json();
+  if (j?.error) throw new Error(j.error);
+  return j as Gate | Code;
+}
+
+/* ───────── component ───────── */
 export default function Page() {
-  const [mode, setMode] = useState<Mode>("conversation");
-  const [who, setWho] = useState<Who>("Child");
+  const [items, setItems] = useState<Item[]>([]);
   const [input, setInput] = useState("");
-  const [msgs, setMsgs] = useState<ChatMsg[]>([]);
-  const [transcript, setTranscript] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
-  const [devOpen, setDevOpen] = useState(true);
-  const [stages, setStages] = useState<Stage[]>([]);
-  const [res, setRes] = useState<Result | null>(null);
-  const [turns, setTurns] = useState(0);
-  const threadRef = useRef<HTMLDivElement>(null);
-  const taRef = useRef<HTMLTextAreaElement>(null);
+  const [dev, setDev] = useState(true);
+  const scrollRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => { threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight }); }, [msgs, stages, res]);
-  useEffect(() => { setTranscript([]); }, [mode]);
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: 1e9, behavior: "smooth" });
+  }, [items, busy]);
 
-  function autosize() { const el = taRef.current; if (!el) return; el.style.height = "auto"; el.style.height = Math.min(el.scrollHeight, 160) + "px"; }
-
-  async function callBackend(kind: Mode, content: string): Promise<Result> {
-    try {
-      const r = await fetch("/assess", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ kind, content }) });
-      if (!r.ok) throw new Error(String(r.status));
-      return (await r.json()) as Result;
-    } catch {
-      return mockScore(kind, content); // graceful fallback
-    }
-  }
-
-  async function send() {
-    const text = input.trim(); if (!text || busy) return;
+  async function send(text: string) {
+    const prompt = text.trim();
+    if (!prompt || busy) return;
+    setItems((x) => [...x, { role: "user", text: prompt }]);
+    setInput("");
     setBusy(true);
-    setMsgs((m) => [...m, { role: "user", text, mode, who }]);
-    let content = text; let turnCount = turns;
-    if (mode === "conversation") { const next = [...transcript, `${who}: ${text}`]; setTranscript(next); content = next.join("\n"); turnCount = next.length; setTurns(turnCount); }
-    else { turnCount = 1; setTurns(1); }
-    setInput(""); requestAnimationFrame(autosize);
-
-    setStages(STAGE_DEFS.map((s) => ({ ...s, state: "idle" })));
-    setRes(null);
-
-    const result = await callBackend(mode, content);
-
-    for (let i = 0; i < STAGE_DEFS.length - 1; i++) {
-      setStages((s) => s.map((st, j) => (j === i ? { ...st, state: "run" } : st)));
-      await wait(190);
-      setStages((s) => s.map((st, j) => (j === i ? { ...st, state: "done" } : st)));
+    try {
+      const res = await callAgent(prompt);
+      if (res.phase === "gate")
+        setItems((x) => [...x, { role: "gate", gate: res, prompt, chosen: {}, done: false }]);
+      else setItems((x) => [...x, { role: "code", code: res }]);
+    } catch {
+      if (CHILD_RE.test(prompt))
+        setItems((x) => [...x, { role: "gate", gate: mockGate(), prompt, chosen: {}, done: false }]);
+      else setItems((x) => [...x, { role: "code", code: mockCode(false) }]);
+    } finally {
+      setBusy(false);
     }
-    setStages((s) => s.map((st) => (st.esc ? { ...st, state: "done", lab: result.alarm ? "Escalated → human monitor" : "No escalation" } : st)));
-    setRes(result);
-    setMsgs((m) => [...m, { role: "verdict", res: result }]);
-    setBusy(false);
   }
 
-  const alarmGlow = res?.alarm ?? false;
+  function pick(idx: number, decisionId: string, optId: string) {
+    setItems((x) =>
+      x.map((it, i) =>
+        i === idx && it.role === "gate"
+          ? { ...it, chosen: { ...it.chosen, [decisionId]: optId } }
+          : it
+      )
+    );
+  }
+
+  async function generateFrom(idx: number) {
+    const it = items[idx];
+    if (it.role !== "gate" || busy) return;
+    const choices: Record<string, string> = {};
+    for (const d of it.gate.decisions) {
+      const opt = d.options.find((o) => o.id === it.chosen[d.id]);
+      choices[d.id] = opt ? opt.label : it.chosen[d.id];
+    }
+    setItems((x) => x.map((m, i) => (i === idx && m.role === "gate" ? { ...m, done: true } : m)));
+    setBusy(true);
+    try {
+      const res = await callAgent(it.prompt, choices);
+      setItems((x) => [...x, { role: "code", code: res.phase === "code" ? res : mockCode(true) }]);
+    } catch {
+      setItems((x) => [...x, { role: "code", code: mockCode(true) }]);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /* derive rail state */
+  const lastGate = [...items].reverse().find((i) => i.role === "gate") as
+    | Extract<Item, { role: "gate" }> | undefined;
+  const lastCode = [...items].reverse().find((i) => i.role === "code") as
+    | Extract<Item, { role: "code" }> | undefined;
+  const lastUser = [...items].reverse().find((i) => i.role === "user") as
+    | Extract<Item, { role: "user" }> | undefined;
+  const gateOpen = !!lastGate && !lastGate.done;
+  const gated = !!lastCode?.code.audit_hash || gateOpen;
+  const codeReady = !!lastCode && (!lastGate || lastGate.done);
+
+  type SState = "idle" | "run" | "done" | "skip";
+  const stages: { lab: string; tag?: string; xf?: boolean; state: SState }[] = [
+    { lab: "Input intercepted", state: items.length ? "done" : "idle" },
+    { lab: "Sensitive-signal scan", tag: "LLM", state: busy && !gateOpen && !lastGate?.done ? "run" : items.length ? "done" : "idle" },
+    { lab: "Child-directed gate", tag: "LLM", state: gated ? "done" : codeReady ? "skip" : "idle" },
+    { lab: "Developer choices", xf: true, state: gateOpen ? "run" : gated ? "done" : codeReady ? "skip" : "idle" },
+    { lab: "Citation grounding", xf: true, state: codeReady ? "done" : "idle" },
+    { lab: "Audit append", state: lastCode?.code.audit_hash ? "done" : codeReady && !gated ? "skip" : busy && lastGate?.done ? "run" : "idle" },
+    { lab: "Code generated", state: codeReady ? "done" : busy && lastGate?.done ? "run" : "idle" },
+  ];
+
+  const cites = lastCode?.code.citations || [];
+  const auditHash = lastCode?.code.audit_hash;
+  const auditSeq = lastCode?.code.audit_seq;
 
   return (
-    <div className="ssg">
-      <style dangerouslySetInnerHTML={{ __html: CSS }} />
-      <div className="app">
-        <div className="top">
-          <div className="brand"><div className="glyph">SG</div><div className="wm">ssgcheck<small>monitor</small></div></div>
-          <div className="seg">
-            {(["conversation", "code"] as Mode[]).map((m) => (
-              <button key={m} className={mode === m ? "on" : ""} onClick={() => setMode(m)}>{m === "conversation" ? "Conversation" : "Code"}</button>
-            ))}
-          </div>
-          <div className="spacer" />
-          <button className={`devtog ${devOpen ? "on" : ""}`} onClick={() => setDevOpen((d) => !d)}><span className="dot" />Developer mode</button>
-        </div>
+    <div className="wrap">
+      <style>{CSS}</style>
 
-        <div className="body">
-          <div className="chatwrap">
-            <div className="thread" ref={threadRef}>
-              <div className="col">
-                {msgs.length === 0 ? (
-                  <div className="empty">
-                    <h1>What should we review?</h1>
-                    <p>Send a message or paste a snippet. Three models score it independently; if the aggregate risk crosses the threshold it&apos;s escalated to a human reviewer and written to the audit trail.</p>
-                    <div className="chips">
-                      {CHIPS[mode].map((ch, i) => (
-                        <button key={i} className="chip" onClick={() => { setInput(ch.t); requestAnimationFrame(autosize); taRef.current?.focus(); }}>
-                          <b>{ch.b}</b>{ch.t}
-                        </button>
+      <header className="top">
+        <div className="brand">
+          <div className="logo">SG</div>
+          <div>
+            <div className="bname">ssgcheck</div>
+            <div className="bsub">coding agent</div>
+          </div>
+        </div>
+        <button className={`devtog ${dev ? "on" : ""}`} onClick={() => setDev((d) => !d)}>
+          <span className="dot" /> Developer mode
+        </button>
+      </header>
+
+      <div className="body">
+        <main className="chat" ref={scrollRef}>
+          {items.length === 0 && (
+            <div className="empty">
+              <div className="ehead">A coding agent with a governance gate built in.</div>
+              <p className="esub">
+                Describe what you want to build. If the work is directed at or affects children, the
+                agent pauses, flags the risks, and makes you choose how each safeguard is implemented —
+                then writes the code under <code>AGENTS.md</code> and logs the decision to a
+                tamper-evident audit trail.
+              </p>
+              <button className="example" onClick={() => setInput(EXAMPLE)}>
+                Try: “{EXAMPLE.slice(0, 60)}…”
+              </button>
+            </div>
+          )}
+
+          {items.map((it, idx) => {
+            if (it.role === "user")
+              return (
+                <div key={idx} className="row">
+                  <div className="who"><span className="av u">{"{ }"}</span> YOU</div>
+                  <div className="bubble u">{it.text}</div>
+                </div>
+              );
+
+            if (it.role === "gate") {
+              const g = it.gate;
+              const allChosen = g.decisions.every((d) => it.chosen[d.id]);
+              return (
+                <div key={idx} className="row">
+                  <div className="who"><span className="av a">SG</span> SSGCHECK</div>
+                  <div className="bubble a">
+                    <div className="gatehd">
+                      <span className="pill flag">GATE · child-directed</span>
+                      <span className="gmsg">{g.message}</span>
+                    </div>
+                    <div className="flagged">
+                      {g.flagged.map((f, i) => (
+                        <div key={i} className="fitem"><span className="fmark">!</span> {f}</div>
                       ))}
                     </div>
-                  </div>
-                ) : (
-                  msgs.map((m, i) =>
-                    m.role === "user" ? (
-                      <div className="msg" key={i}>
-                        <div className="role"><span className="ava u">{m.mode === "code" ? "{}" : m.who?.[0]}</span>{m.mode === "code" ? "YOU · CODE" : m.who?.toUpperCase()}</div>
-                        <div className={`bubble user ${m.mode === "code" ? "code" : ""}`}>{m.text}</div>
-                      </div>
-                    ) : (
-                      <Verdict key={i} res={m.res!} />
-                    )
-                  )
-                )}
-              </div>
-            </div>
-
-            <div className="composer">
-              <div className="cbox">
-                <div className="cinner">
-                  {mode === "conversation" && (
-                    <select className="who" value={who} onChange={(e) => setWho(e.target.value as Who)}><option>Child</option><option>Adult</option></select>
-                  )}
-                  <textarea
-                    ref={taRef} className={mode === "code" ? "code" : ""} rows={1}
-                    value={input} placeholder={mode === "code" ? "Paste a code snippet to assess…" : "Message the monitor…"}
-                    onChange={(e) => { setInput(e.target.value); autosize(); }}
-                    onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
-                  />
-                  <button className="send" disabled={!input.trim() || busy} onClick={send} aria-label="Send">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 19V5M5 12l7-7 7 7" /></svg>
-                  </button>
-                </div>
-                <div className="hint">{mode === "code" ? "Code mode · scores fairness · privacy · security" : "Conversation mode · scores grooming · self-harm · PII · distress"}</div>
-              </div>
-            </div>
-          </div>
-
-          <aside className={`rail ${devOpen ? "" : "hidden"} ${alarmGlow ? "alarm" : ""}`}>
-            <div className="rhead">
-              <span className="live-dot" /><span className="lab">Governance Pipeline</span><span className="badge-live">● live</span>
-            </div>
-            <div className="rscroll">
-              {stages.length === 0 ? (
-                <div className="rempty">{`// awaiting input`}<br />{`// pipeline flow, risk drivers,`}<br />{`// citations & audit record`}<br />{`// stream here`}</div>
-              ) : (
-                <>
-                  <div className="panel">
-                    <div className="phead">
-                      <svg className="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z" /></svg>
-                      <span className="pt">Pipeline flow</span>
-                    </div>
-                    <div className="flow">
-                      {stages.map((s, i) => (
-                        <div key={i} className={`stage ${s.esc ? "esc" : ""} ${s.state}`}>
-                          <span className="nd">
-                            {s.state === "run" ? <span className="spin" /> : s.state === "done" ? (s.esc && res?.alarm ? "!" : "✓") : s.esc ? "!" : ""}
-                          </span>
-                          <span className="sl">{s.lab}{s.tag && <span className="tag llm">{s.tag}</span>}{s.xf && <span className="tag xf">→</span>}</span>
+                    <div className="decisions">
+                      {g.decisions.map((d) => (
+                        <div key={d.id} className="dcard">
+                          <div className="dq">{d.question}</div>
+                          <div className="dsrc">{d.source}</div>
+                          <div className="opts">
+                            {d.options.map((o) => {
+                              const on = it.chosen[d.id] === o.id;
+                              return (
+                                <button key={o.id} className={`opt ${on ? "on" : ""}`} disabled={it.done} onClick={() => pick(idx, d.id, o.id)}>
+                                  <span className="radio" />
+                                  <span className="olab">{o.label}</span>
+                                  <span className="otrade">{o.tradeoff}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
                         </div>
                       ))}
                     </div>
+                    {!it.done ? (
+                      <button className="gen" disabled={!allChosen || busy} onClick={() => generateFrom(idx)}>
+                        {allChosen ? "Generate code with these choices →" : "Choose an option for each decision"}
+                      </button>
+                    ) : (
+                      <div className="chosenline">Choices recorded · generating under policy…</div>
+                    )}
                   </div>
-                  {res && <RailResult res={res} turns={turns} />}
+                </div>
+              );
+            }
+
+            const c = it.code;
+            return (
+              <div key={idx} className="row">
+                <div className="who"><span className="av a">SG</span> SSGCHECK</div>
+                <div className="bubble a">
+                  <div className="cmsg">{c.message}</div>
+                  <div className="codewrap">
+                    <div className="codebar">
+                      <span className="lang">{c.language || "code"}</span>
+                      {c.provider && <span className="prov">{c.provider}</span>}
+                    </div>
+                    <pre className="code"><code>{c.code}</code></pre>
+                  </div>
+                  {c.explanation && <div className="expl">{c.explanation}</div>}
+                  {!!(c.citations && c.citations.length) && (
+                    <div className="cites">
+                      {c.citations.map((ci, i) => (
+                        <span key={i} className="cite"><b>{ci.tag}</b> {ci.text}</span>
+                      ))}
+                    </div>
+                  )}
+                  {c.audit_hash && (
+                    <div className="auditline">
+                      <span className="ok">●</span> Logged to audit trail · seq #{c.audit_seq} ·{" "}
+                      <code>{c.audit_hash.slice(0, 16)}…</code>
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+
+          {busy && (
+            <div className="row">
+              <div className="who"><span className="av a">SG</span> SSGCHECK</div>
+              <div className="bubble a thinking">
+                <span className="d" /><span className="d" /><span className="d" />
+                <span className="tlabel">{lastGate?.done ? "writing code under policy" : "scanning for child-directed signals"}</span>
+              </div>
+            </div>
+          )}
+
+          <div className="composer">
+            <textarea
+              value={input}
+              placeholder="Describe what you want to build…"
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(input); }
+              }}
+              rows={1}
+            />
+            <button className="snd" disabled={!input.trim() || busy} onClick={() => send(input)}>↑</button>
+          </div>
+          <div className="foot">Coding agent · gate engages for child-directed work · governed by AGENTS.md</div>
+        </main>
+
+        {dev && (
+          <aside className="rail">
+            <div className="railhd">
+              <span className="rdot" /> Governance Pipeline <span className="live">LIVE</span>
+            </div>
+
+            <div className="card">
+              <div className="ctitle"><span className="bolt">⚡</span> PIPELINE FLOW</div>
+              {stages.map((s, i) => (
+                <div key={i} className={`stage ${s.state}`}>
+                  <span className="mk">{s.state === "done" ? "✓" : s.state === "skip" ? "–" : ""}</span>
+                  <span className="slab">{s.lab}</span>
+                  {s.tag && <span className="tag">{s.tag}</span>}
+                  {s.xf && <span className="arr">→</span>}
+                </div>
+              ))}
+            </div>
+
+            <div className="card">
+              <div className="cnum"><span className="n">1</span> CONTEXT {gated && <span className="tag">GATED</span>}</div>
+              <div className="ctxt">
+                {lastUser ? (
+                  <><span className="muted">prompt:</span> {lastUser.text.slice(0, 90)}{lastUser.text.length > 90 ? "…" : ""}</>
+                ) : (
+                  <span className="muted">awaiting a build request…</span>
+                )}
+              </div>
+              <div className="csub">{gated ? "child-directed → gate engaged" : codeReady ? "standard → no gate" : "—"}</div>
+            </div>
+
+            {(gateOpen || gated) && lastGate && (
+              <div className="card">
+                <div className="cnum"><span className="n">2</span> FLAGGED RISKS</div>
+                {lastGate.gate.flagged.map((f, i) => (
+                  <div key={i} className="rrisk"><span className="rx">!</span> {f}</div>
+                ))}
+                <div className="dlist">
+                  {lastGate.gate.decisions.map((d) => {
+                    const opt = d.options.find((o) => o.id === lastGate.chosen[d.id]);
+                    return (
+                      <div key={d.id} className="drow">
+                        <span className="dname">{d.id}</span>
+                        <span className={`dval ${opt ? "set" : ""}`}>{opt ? opt.label : "awaiting choice"}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {codeReady && cites.length > 0 && (
+              <div className="card">
+                <div className="cnum"><span className="n">3</span> CITATIONS</div>
+                {cites.map((c, i) => (
+                  <div key={i} className="crow"><b>{c.tag}</b> <span className="muted">{c.text}</span></div>
+                ))}
+              </div>
+            )}
+
+            <div className="card">
+              <div className="cnum"><span className="n">4</span> ESCALATION · AUDIT</div>
+              {auditHash ? (
+                <>
+                  <div className="arow"><span className="muted">seq</span> #{auditSeq}</div>
+                  <div className="arow"><span className="muted">sha-256</span></div>
+                  <div className="hash">{auditHash}</div>
+                  <div className="chainok"><span className="ok">●</span> appended to hash chain</div>
                 </>
+              ) : codeReady ? (
+                <div className="muted small">no gate fired — nothing to escalate</div>
+              ) : (
+                <div className="muted small">no decision logged yet</div>
               )}
             </div>
           </aside>
-        </div>
+        )}
       </div>
     </div>
   );
 }
 
-function Verdict({ res }: { res: Result }) {
-  const tk = tier(res.aggregate);
-  const headline = res.alarm
-    ? "Escalated. The panel's aggregate risk crossed the threshold, so this was sent to a human reviewer and recorded."
-    : "Cleared. The panel scored this below the escalation threshold — no human review required.";
-  return (
-    <div className="msg">
-      <div className="role"><span className="ava a">SG</span>ssgcheck</div>
-      <div className="verdict">
-        <div className="vhead"><span className="tier" style={{ background: tk.c }}>{tk.t} · {res.aggregate.toFixed(2)}</span>
-          <span className="vmsg">{res.n_models}-model panel · threshold {res.threshold.toFixed(2)}</span></div>
-        <div className="vbody">{headline}</div>
-        {res.alarm
-          ? <div className="escbar">⚠ Escalated to human monitor · audit #{res.audit_seq}</div>
-          : <div className="okbar">● Below threshold · logged, no escalation</div>}
-      </div>
-    </div>
-  );
-}
-
-/* width-animating bar */
-function GrowBar({ w, color, className = "fill" }: { w: number; color: string; className?: string }) {
-  const [x, setX] = useState(0);
-  useEffect(() => { const id = requestAnimationFrame(() => setX(w)); return () => cancelAnimationFrame(id); }, [w]);
-  return <span className={className} style={{ width: `${x * 100}%`, background: color }} />;
-}
-
-function RailResult({ res, turns }: { res: Result; turns: number }) {
-  const tk = tier(res.aggregate);
-  const mode = (res.kind as Mode);
-  const cites = CITES[mode] ?? [];
-  const topSignal = Object.entries(res.by_measure).sort((a, b) => b[1] - a[1])[0];
-  const signal = res.kind === "code"
-    ? <>code · top signal: <b>{topSignal?.[0]}</b> ({topSignal?.[1].toFixed(2)})</>
-    : <>conversation · {turns} turn(s) · top signal: <b>{topSignal?.[0]?.replace(/_/g, " ")}</b></>;
-
-  const drivers = Object.entries(res.by_measure)
-    .map(([m, v]) => ({ m, v, contrib: +(v - res.threshold).toFixed(2) }))
-    .sort((a, b) => Math.abs(b.contrib) - Math.abs(a.contrib));
-  const maxAbs = Math.max(...drivers.map((d) => Math.abs(d.contrib)), 0.01);
-
-  return (
-    <>
-      <div className="panel">
-        <div className="phead"><span className="pn">1</span><span className="pt">Context</span><span className="pbadge llm">LLM</span></div>
-        <div className="ctxline">{signal}</div>
-        <div className="ctxkv">scan → {res.n_models}/3 models responded</div>
-      </div>
-
-      <div className="panel">
-        <div className="phead"><span className="pn">2</span><span className="pt">Risk assessment</span><span className="pbadge ens">3-MODEL</span></div>
-        <div className="rtier"><span className="k">Risk Tier</span><span className="tierpill" style={{ background: tk.c }}>{tk.t}</span></div>
-        <div className="rprob"><span className="k">Aggregate Risk</span><span className="v" style={{ color: tk.c }}>{res.aggregate.toFixed(2)}</span></div>
-
-        <div className="sub">Top Risk Drivers · contribution to aggregate</div>
-        {drivers.map((d) => {
-          const pos = d.contrib > 0;
-          return (
-            <div className="drv" key={d.m}>
-              <span className="dn">{d.m.replace(/_/g, " ")}</span>
-              <span className="dtrack"><GrowBar className="dbar" w={Math.abs(d.contrib) / maxAbs} color={pos ? "var(--red)" : "var(--green)"} /></span>
-              <span className={`dv ${pos ? "pos" : "neg"}`}>{pos ? "+" : ""}{d.contrib.toFixed(2)}</span>
-            </div>
-          );
-        })}
-
-        <div className="sub">Per-model panel · overall</div>
-        {res.panel.map((p) => (
-          <div className="pm" key={p.provider}>
-            <span className="pn2">{p.provider}</span>
-            <span className="ptrack"><GrowBar className="pbar" w={p.overall} color={barColor(p.overall)} /></span>
-            <span className="pv">{p.overall.toFixed(2)}</span>
-          </div>
-        ))}
-      </div>
-
-      <div className="panel">
-        <div className="phead"><span className="pn">3</span><span className="pt">Grounded citations</span><span className="pbadge reg">REG</span></div>
-        {cites.map(([t, d], i) => (
-          <div className="feat" key={i}><div className="fl"><span className="k">{t}</span><span className="v">{d}</span></div></div>
-        ))}
-      </div>
-
-      <div className="panel">
-        <div className="phead"><span className="pn">4</span><span className="pt">Structured features</span><span className="pbadge pol">META</span></div>
-        <div className="feat">
-          <div className="fl"><span className="k">kind</span><span className="v">{res.kind}</span></div>
-          <div className="fl"><span className="k">measures</span><span className="v">{(MEASURES[mode] ?? []).length}</span></div>
-          <div className="fl"><span className="k">threshold</span><span className="v">{res.threshold.toFixed(2)}</span></div>
-          <div className="fl"><span className="k">ai_act_ref</span><span className="v" style={{ maxWidth: 180 }}>{(AI_ACT[mode] ?? "").split(";")[0]}</span></div>
-        </div>
-      </div>
-
-      {res.alarm ? (
-        <div className="panel esccard">
-          <div className="phead"><span className="pn">5</span><span className="pt">Escalation · audit</span><span className="pbadge ens">SHA-256</span></div>
-          <div className="ledger">
-            <div className="ll"><span className="k">seq</span><span className="hashv">#{res.audit_seq}</span></div>
-            <div className="ll"><span className="k">decision</span><span className="hashv" style={{ color: "#ff8076" }}>ESCALATED</span></div>
-            {res.audit_hash && <div className="ll"><span className="k">hash</span><span className="hashv">{res.audit_hash.slice(0, 24)}…</span></div>}
-          </div>
-          <div className="chainok">✓ appended to tamper-evident chain</div>
-        </div>
-      ) : (
-        <div className="panel">
-          <div className="phead"><span className="pn">5</span><span className="pt">Escalation · audit</span><span className="pbadge reg">POLICY</span></div>
-          <div className="ledger"><div className="ll"><span className="k">decision</span><span className="hashv" style={{ color: "var(--rail-dim)" }}>below threshold</span></div></div>
-          <div className="chainok" style={{ color: "var(--rail-dim)" }}>○ logged · no human review needed</div>
-        </div>
-      )}
-    </>
-  );
-}
-
-/* ───────────────────────── styles ───────────────────────── */
+/* ───────── styles (scoped, no external deps) ───────── */
 const CSS = `
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
-.ssg{
-  --paper:#FAF9F6;--paper-2:#F2F0EA;--ink:#1B1D21;--ink-soft:#5A5F68;--hair:#E6E3DB;
-  --accent:#4C6FFF;--accent-soft:#EAEEFF;
-  --rail:#0B0F17;--rail-2:#121826;--rail-3:#1B2433;--rail-line:#283246;--rail-ink:#CDD6E3;--rail-dim:#6E7A8C;
-  --green:#27D17F;--green-dim:#1B6B4B;--amber:#F0B429;--blue:#5B7CFF;--red:#F0544A;
-  --low:#27D17F;--med:#F0B429;--high:#F0544A;
-  --sans:"Inter",system-ui,sans-serif;--display:"Space Grotesk",system-ui,sans-serif;--mono:"JetBrains Mono",ui-monospace,monospace;
-  font-family:var(--sans);color:var(--ink);height:100vh}
-.ssg *{box-sizing:border-box}
-@media (prefers-reduced-motion:reduce){.ssg *{animation:none!important;transition:none!important}}
-.ssg .app{display:flex;flex-direction:column;height:100vh;overflow:hidden;background:var(--paper)}
-.ssg .top{display:flex;align-items:center;gap:16px;padding:12px 18px;border-bottom:1px solid var(--hair);background:rgba(250,249,246,.85);backdrop-filter:blur(8px);z-index:5}
-.ssg .brand{display:flex;align-items:center;gap:10px}
-.ssg .glyph{width:30px;height:30px;border-radius:8px;background:var(--ink);color:var(--paper);display:grid;place-items:center;font-family:var(--display);font-weight:700;font-size:13px;letter-spacing:.5px}
-.ssg .wm{font-family:var(--display);font-weight:600;font-size:15px;letter-spacing:-.2px}
-.ssg .wm small{color:var(--ink-soft);font-family:var(--mono);font-weight:400;font-size:11px;margin-left:6px}
-.ssg .seg{display:flex;background:var(--paper-2);border:1px solid var(--hair);border-radius:999px;padding:3px}
-.ssg .seg button{border:0;background:transparent;font-family:var(--sans);font-size:13px;font-weight:500;color:var(--ink-soft);padding:5px 14px;border-radius:999px;cursor:pointer;transition:.15s}
-.ssg .seg button.on{background:#fff;color:var(--ink);box-shadow:0 1px 2px rgba(0,0,0,.06)}
-.ssg .spacer{flex:1}
-.ssg .devtog{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:500;color:var(--ink-soft);border:1px solid var(--hair);background:#fff;border-radius:999px;padding:6px 12px;cursor:pointer}
-.ssg .devtog .dot{width:7px;height:7px;border-radius:50%;background:var(--ink-soft)}
-.ssg .devtog.on{color:var(--ink);border-color:#cdd6ff}
-.ssg .devtog.on .dot{background:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
-.ssg .body{display:flex;flex:1;min-height:0}
-.ssg .chatwrap{flex:1;min-width:0;display:flex;flex-direction:column}
-.ssg .thread{flex:1;overflow-y:auto;padding:28px 0}
-.ssg .col{max-width:720px;margin:0 auto;padding:0 24px}
-.ssg .empty{margin-top:8vh;text-align:center;color:var(--ink-soft)}
-.ssg .empty h1{font-family:var(--display);font-weight:600;font-size:26px;color:var(--ink);margin:0 0 8px}
-.ssg .empty p{margin:0 auto;max-width:430px;line-height:1.5;font-size:14px}
-.ssg .chips{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:22px}
-.ssg .chip{font-size:13px;border:1px solid var(--hair);background:#fff;border-radius:10px;padding:9px 13px;cursor:pointer;text-align:left;max-width:300px;color:var(--ink);transition:.15s;white-space:pre-wrap;font-family:inherit}
-.ssg .chip:hover{border-color:#c9c4b6;transform:translateY(-1px)}
-.ssg .chip b{display:block;font-weight:600;font-size:12px;color:var(--ink-soft);margin-bottom:2px}
-.ssg .msg{margin:18px 0;animation:ssgrise .35s ease}
-@keyframes ssgrise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
-.ssg .msg .role{font-size:11px;font-weight:600;letter-spacing:.4px;text-transform:uppercase;color:var(--ink-soft);margin-bottom:6px;display:flex;align-items:center;gap:7px}
-.ssg .ava{width:18px;height:18px;border-radius:5px;display:grid;place-items:center;font-size:10px;font-weight:700;font-family:var(--display)}
-.ssg .ava.u{background:var(--accent);color:#fff}.ssg .ava.a{background:var(--ink);color:var(--paper)}
-.ssg .bubble{font-size:14.5px;line-height:1.6}
-.ssg .bubble.user{background:var(--accent-soft);border:1px solid #d9e0ff;border-radius:14px;padding:12px 15px;white-space:pre-wrap}
-.ssg .bubble.user.code{font-family:var(--mono);font-size:13px;background:#0f141b;color:#d7dee8;border-color:#0f141b}
-.ssg .verdict{border:1px solid var(--hair);border-radius:14px;overflow:hidden;background:#fff}
-.ssg .verdict .vhead{display:flex;align-items:center;gap:12px;padding:13px 16px;border-bottom:1px solid var(--hair)}
-.ssg .tier{font-family:var(--mono);font-weight:600;font-size:11px;letter-spacing:.5px;color:#fff;padding:4px 9px;border-radius:7px}
-.ssg .verdict .vmsg{font-size:13px;color:var(--ink-soft)}
-.ssg .verdict .vbody{padding:13px 16px;font-size:14px;line-height:1.55}
-.ssg .escbar{padding:11px 16px;background:#fdecea;border-top:1px solid #f6cfca;color:#b3392f;font-weight:600;font-size:13px}
-.ssg .okbar{padding:11px 16px;background:#eef8f2;border-top:1px solid #cfe9da;color:#147a52;font-weight:500;font-size:13px}
-.ssg .composer{padding:14px 0 22px;background:linear-gradient(transparent,var(--paper) 30%)}
-.ssg .cbox{max-width:720px;margin:0 auto;padding:0 24px}
-.ssg .cinner{display:flex;align-items:flex-end;gap:10px;border:1px solid var(--hair);background:#fff;border-radius:18px;padding:8px 8px 8px 6px;box-shadow:0 2px 10px rgba(0,0,0,.04)}
-.ssg .cinner:focus-within{border-color:#c2cdff;box-shadow:0 2px 16px rgba(76,111,255,.12)}
-.ssg .who{align-self:stretch;border:0;background:var(--paper-2);border-radius:12px;font-family:var(--sans);font-size:12px;font-weight:600;color:var(--ink-soft);padding:0 8px;cursor:pointer}
-.ssg textarea{flex:1;border:0;outline:0;resize:none;font-family:var(--sans);font-size:14.5px;line-height:1.5;padding:9px 4px;max-height:160px;background:transparent;color:var(--ink)}
-.ssg textarea.code{font-family:var(--mono);font-size:13px}
-.ssg .send{border:0;width:38px;height:38px;border-radius:12px;background:var(--ink);color:#fff;cursor:pointer;display:grid;place-items:center;transition:.15s}
-.ssg .send:disabled{opacity:.4;cursor:default}.ssg .send:not(:disabled):hover{background:var(--accent)}
-.ssg .hint{font-size:11px;color:var(--ink-soft);font-family:var(--mono);margin-top:8px}
-.ssg .rail{width:392px;flex-shrink:0;background:var(--rail);color:var(--rail-ink);border-left:1px solid var(--rail-line);display:flex;flex-direction:column;transition:margin-right .28s ease,box-shadow .28s ease}
-.ssg .rail.hidden{margin-right:-392px}
-.ssg .rail.alarm{box-shadow:inset 4px 0 0 var(--high)}
-.ssg .rhead{padding:14px 16px;border-bottom:1px solid var(--rail-line);display:flex;align-items:center;gap:9px}
-.ssg .rhead .live-dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 0 3px rgba(39,209,127,.18);animation:ssgpulse 1.8s infinite}
-.ssg .rhead .lab{font-family:var(--display);font-weight:600;font-size:14px;color:var(--rail-ink)}
-.ssg .rhead .badge-live{margin-left:auto;font-family:var(--mono);font-size:9.5px;letter-spacing:1px;color:var(--green);text-transform:uppercase}
-@keyframes ssgpulse{50%{opacity:.4}}
-.ssg .rscroll{flex:1;overflow-y:auto;padding:14px}
-.ssg .rempty{color:var(--rail-dim);font-size:13px;line-height:1.6;font-family:var(--mono)}
-.ssg .panel{background:var(--rail-2);border:1px solid var(--rail-line);border-radius:13px;padding:13px;margin-bottom:13px}
-.ssg .phead{display:flex;align-items:center;gap:8px;margin-bottom:12px}
-.ssg .phead .ic{width:18px;height:18px;color:var(--amber)}
-.ssg .phead .pt{font-family:var(--mono);font-size:10.5px;font-weight:600;letter-spacing:1.2px;text-transform:uppercase;color:var(--rail-ink)}
-.ssg .phead .pn{font-family:var(--mono);font-size:11px;font-weight:700;color:#0b0f17;background:var(--amber);width:18px;height:18px;border-radius:5px;display:grid;place-items:center}
-.ssg .phead .pbadge{margin-left:auto;font-family:var(--mono);font-size:9px;font-weight:700;letter-spacing:.5px;padding:2px 6px;border-radius:5px}
-.ssg .pbadge.llm{background:rgba(240,180,41,.16);color:var(--amber);border:1px solid rgba(240,180,41,.35)}
-.ssg .pbadge.ens{background:rgba(240,84,74,.16);color:var(--red);border:1px solid rgba(240,84,74,.35)}
-.ssg .pbadge.pol{background:rgba(91,124,255,.16);color:var(--blue);border:1px solid rgba(91,124,255,.35)}
-.ssg .pbadge.reg{background:rgba(39,209,127,.16);color:var(--green);border:1px solid rgba(39,209,127,.35)}
-.ssg .flow{position:relative;padding-left:4px}
-.ssg .stage{display:flex;align-items:center;gap:11px;padding:6px 0;position:relative}
-.ssg .stage .nd{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;font-size:11px;z-index:2;border:1.5px solid var(--rail-line);background:var(--rail-3);color:var(--rail-dim);transition:.2s;flex-shrink:0}
-.ssg .stage.done .nd{background:var(--green);border-color:var(--green);color:#06281c;font-weight:700}
-.ssg .stage.run .nd{border-color:var(--blue);color:var(--blue);background:rgba(91,124,255,.12)}
-.ssg .stage.run .nd .spin{width:11px;height:11px;border:1.6px solid currentColor;border-right-color:transparent;border-radius:50%;animation:ssgspin .8s linear infinite}
-.ssg .stage.esc.done .nd{background:var(--red);border-color:var(--red);color:#fff}
-@keyframes ssgspin{to{transform:rotate(360deg)}}
-.ssg .stage .sl{font-size:12.5px;color:var(--rail-dim);font-weight:500;display:flex;align-items:center;gap:7px}
-.ssg .stage.done .sl{color:var(--rail-ink)}.ssg .stage.run .sl{color:var(--blue)}.ssg .stage.esc.done .sl{color:#ff8076;font-weight:600}
-.ssg .stage .tag{font-family:var(--mono);font-size:8.5px;font-weight:700;letter-spacing:.5px;padding:1px 5px;border-radius:4px}
-.ssg .tag.llm{background:rgba(240,180,41,.16);color:var(--amber)}
-.ssg .tag.xf{color:var(--rail-dim)}
-.ssg .stage:not(:last-child)::before{content:"";position:absolute;left:10.5px;top:26px;width:1.5px;height:12px;background:var(--rail-line)}
-.ssg .stage.done:not(:last-child)::before{background:var(--green-dim)}
-.ssg .ctxline{font-size:12.5px;line-height:1.5;color:var(--rail-ink)}
-.ssg .ctxline b{color:var(--green);font-weight:500}
-.ssg .ctxkv{font-family:var(--mono);font-size:11px;color:var(--rail-dim);margin-top:6px}
-.ssg .rtier{display:flex;align-items:center;justify-content:space-between;padding:5px 0}
-.ssg .rtier .k{font-size:12.5px;color:var(--rail-dim)}
-.ssg .tierpill{font-family:var(--mono);font-weight:700;font-size:10px;letter-spacing:.5px;color:#06281c;padding:3px 9px;border-radius:6px}
-.ssg .rprob{display:flex;align-items:center;justify-content:space-between;padding:5px 0 10px;border-bottom:1px solid var(--rail-line)}
-.ssg .rprob .k{font-size:12.5px;color:var(--rail-dim)}
-.ssg .rprob .v{font-family:var(--mono);font-size:26px;font-weight:600;letter-spacing:-.5px}
-.ssg .sub{font-family:var(--mono);font-size:9px;letter-spacing:1px;text-transform:uppercase;color:var(--rail-dim);margin:13px 0 8px}
-.ssg .drv{display:grid;grid-template-columns:96px 1fr 46px;align-items:center;gap:8px;margin:6px 0;font-size:11px}
-.ssg .drv .dn{color:var(--rail-ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.ssg .drv .dtrack{height:9px;background:var(--rail-3);border-radius:3px;position:relative;overflow:hidden}
-.ssg .drv .dbar{position:absolute;top:0;bottom:0;left:0;border-radius:3px;transition:width .6s cubic-bezier(.2,.8,.2,1)}
-.ssg .drv .dv{font-family:var(--mono);text-align:right;color:var(--rail-ink)}
-.ssg .drv .dv.pos{color:#ff8076}.ssg .drv .dv.neg{color:var(--green)}
-.ssg .pm{display:grid;grid-template-columns:70px 1fr 34px;align-items:center;gap:8px;margin:5px 0;font-size:11px}
-.ssg .pm .pn2{color:var(--rail-dim)}.ssg .pm .pv{font-family:var(--mono);text-align:right}
-.ssg .pm .ptrack{height:6px;background:var(--rail-3);border-radius:3px;overflow:hidden}
-.ssg .pm .pbar{height:100%;border-radius:3px;transition:width .6s ease;display:block}
-.ssg .feat{font-family:var(--mono);font-size:11px;line-height:1.85}
-.ssg .feat .fl{display:flex;justify-content:space-between;gap:12px}
-.ssg .feat .fl .k{color:var(--rail-dim)}.ssg .feat .fl .v{color:var(--rail-ink);text-align:right}
-.ssg .ledger{font-family:var(--mono);font-size:11px;line-height:1.8}
-.ssg .ledger .ll{display:flex;justify-content:space-between;gap:10px}
-.ssg .ledger .ll .k{color:var(--rail-dim)}.ssg .ledger .hashv{color:var(--green);word-break:break-all;text-align:right}
-.ssg .chainok{margin-top:9px;font-family:var(--mono);font-size:10.5px;color:var(--green);display:flex;align-items:center;gap:6px}
-.ssg .esccard{border-color:#5a2420;background:#1a1210}
-.ssg .esccard .pt{color:#ff8076}.ssg .esccard .pn{background:var(--red);color:#fff}
-@media (max-width:900px){.ssg .rail{position:absolute;right:0;top:0;bottom:0;z-index:20;box-shadow:-12px 0 40px rgba(0,0,0,.4)}.ssg .rail.alarm{box-shadow:inset 4px 0 0 var(--high),-12px 0 40px rgba(0,0,0,.4)}}
+.wrap{--bg:#f7f7f8;--ink:#1d1d1f;--mut:#8a8a8e;--line:#ececf0;--acc:#3b6ef5;
+  --rail:#0f1115;--rcard:#171a21;--rline:#262b36;--green:#34c759;--amber:#e8b22e;--red:#ff5a52;
+  position:fixed;inset:0;display:flex;flex-direction:column;background:var(--bg);color:var(--ink);
+  font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}
+.top{display:flex;align-items:center;justify-content:space-between;padding:14px 20px;border-bottom:1px solid var(--line);background:#fff;}
+.brand{display:flex;align-items:center;gap:10px;}
+.logo{width:32px;height:32px;border-radius:9px;background:#1d1d1f;color:#fff;display:grid;place-items:center;font-weight:700;font-size:12px;}
+.bname{font-weight:650;}
+.bsub{font-size:11px;color:var(--mut);letter-spacing:.04em;text-transform:uppercase;}
+.devtog{display:flex;align-items:center;gap:7px;border:1px solid var(--line);background:#fff;color:var(--mut);padding:7px 13px;border-radius:20px;font-size:13px;cursor:pointer;}
+.devtog.on{color:var(--ink);border-color:#d6d6dc;}
+.devtog .dot{width:7px;height:7px;border-radius:50%;background:#c7c7cc;}
+.devtog.on .dot{background:var(--acc);}
+.body{flex:1;display:flex;min-height:0;}
+.chat{flex:1;overflow-y:auto;padding:26px 22px 0;display:flex;flex-direction:column;}
+.empty{max-width:560px;margin:6vh auto 0;text-align:center;}
+.ehead{font-size:20px;font-weight:650;margin-bottom:10px;}
+.esub{color:#55555b;font-size:14px;}
+.esub code{background:#ececf0;padding:1px 5px;border-radius:4px;font-size:12px;}
+.example{margin-top:18px;border:1px solid var(--line);background:#fff;border-radius:10px;padding:10px 14px;cursor:pointer;color:#444;font-size:13px;}
+.example:hover{border-color:#cfcfd6;}
+.row{max-width:760px;width:100%;margin:0 auto 22px;}
+.who{display:flex;align-items:center;gap:8px;font-size:11px;letter-spacing:.05em;color:var(--mut);margin-bottom:7px;font-weight:600;}
+.av{width:20px;height:20px;border-radius:6px;display:grid;place-items:center;font-size:9px;font-weight:700;color:#fff;}
+.av.u{background:var(--acc);}
+.av.a{background:#1d1d1f;}
+.bubble.u{background:#1d1d1f;color:#fff;padding:14px 16px;border-radius:14px;white-space:pre-wrap;}
+.bubble.a{background:#fff;border:1px solid var(--line);border-radius:14px;padding:16px;}
+.gatehd{display:flex;flex-direction:column;gap:8px;margin-bottom:12px;}
+.pill{align-self:flex-start;font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;letter-spacing:.03em;}
+.pill.flag{background:#fde9c8;color:#92600c;}
+.gmsg{color:#3a3a40;}
+.flagged{display:flex;flex-direction:column;gap:6px;margin-bottom:14px;}
+.fitem{display:flex;gap:8px;align-items:flex-start;font-size:13px;color:#4a4a50;}
+.fmark{flex:none;width:16px;height:16px;border-radius:50%;background:#fde9c8;color:#92600c;display:grid;place-items:center;font-size:10px;font-weight:800;margin-top:1px;}
+.decisions{display:flex;flex-direction:column;gap:12px;}
+.dcard{border:1px solid var(--line);border-radius:11px;padding:13px;}
+.dq{font-weight:600;margin-bottom:3px;}
+.dsrc{font-size:11.5px;color:var(--acc);margin-bottom:10px;}
+.opts{display:flex;flex-direction:column;gap:8px;}
+.opt{display:grid;grid-template-columns:18px 1fr;gap:4px 9px;align-items:start;text-align:left;border:1px solid var(--line);border-radius:9px;padding:10px 12px;background:#fff;cursor:pointer;}
+.opt:hover:not(:disabled){border-color:#cfcfd6;}
+.opt.on{border-color:var(--acc);background:#f5f8ff;}
+.opt:disabled{opacity:.65;cursor:default;}
+.radio{grid-row:1/3;width:15px;height:15px;border-radius:50%;border:2px solid #c7c7cc;margin-top:2px;}
+.opt.on .radio{border-color:var(--acc);background:radial-gradient(circle,var(--acc) 0 38%,transparent 42%);}
+.olab{font-weight:550;}
+.otrade{font-size:12px;color:var(--mut);}
+.gen{margin-top:14px;width:100%;border:none;border-radius:10px;padding:12px;font-size:14px;font-weight:600;background:#1d1d1f;color:#fff;cursor:pointer;}
+.gen:disabled{background:#e3e3e8;color:#a0a0a6;cursor:default;}
+.chosenline{margin-top:12px;font-size:12.5px;color:var(--mut);}
+.cmsg{margin-bottom:12px;color:#3a3a40;}
+.codewrap{border-radius:11px;overflow:hidden;border:1px solid #20232b;}
+.codebar{display:flex;justify-content:space-between;align-items:center;background:#1a1d24;color:#9aa0ad;padding:7px 12px;font-size:11px;}
+.lang{text-transform:uppercase;letter-spacing:.05em;}
+.prov{font-family:ui-monospace,Menlo,monospace;}
+.code{margin:0;background:#0f1115;color:#e6e6ea;padding:14px;overflow-x:auto;font:12.5px/1.6 ui-monospace,Menlo,Consolas,monospace;white-space:pre;}
+.expl{margin-top:12px;font-size:13px;color:#4a4a50;}
+.cites{display:flex;flex-wrap:wrap;gap:7px;margin-top:12px;}
+.cite{font-size:11.5px;background:#f0f2f6;border-radius:6px;padding:4px 9px;color:#55555b;}
+.cite b{color:#2c2c32;}
+.auditline{margin-top:13px;font-size:12.5px;color:#3a3a40;border-top:1px solid var(--line);padding-top:11px;}
+.auditline .ok{color:var(--green);}
+.auditline code{font-family:ui-monospace,Menlo,monospace;background:#f0f2f6;padding:1px 5px;border-radius:4px;}
+.thinking{display:flex;align-items:center;gap:5px;}
+.thinking .d{width:6px;height:6px;border-radius:50%;background:#c7c7cc;animation:bln 1.2s infinite;}
+.thinking .d:nth-child(2){animation-delay:.2s}.thinking .d:nth-child(3){animation-delay:.4s}
+.tlabel{margin-left:8px;font-size:12.5px;color:var(--mut);}
+@keyframes bln{0%,80%,100%{opacity:.3}40%{opacity:1}}
+.composer{position:sticky;bottom:0;max-width:760px;width:100%;margin:6px auto 0;background:var(--bg);padding:10px 0 6px;display:flex;gap:8px;align-items:flex-end;}
+.composer textarea{flex:1;resize:none;border:1px solid #dcdce2;border-radius:14px;padding:13px 15px;font:14px/1.4 inherit;background:#fff;outline:none;max-height:160px;}
+.composer textarea:focus{border-color:#bfbfc8;}
+.snd{flex:none;width:38px;height:38px;border-radius:50%;border:none;background:#1d1d1f;color:#fff;font-size:17px;cursor:pointer;}
+.snd:disabled{background:#d6d6dc;cursor:default;}
+.foot{max-width:760px;width:100%;margin:0 auto;text-align:center;font-size:11px;color:#b0b0b6;padding:4px 0 10px;}
+.rail{width:340px;flex:none;background:var(--rail);color:#d4d8e0;overflow-y:auto;padding:18px;}
+.railhd{display:flex;align-items:center;gap:8px;font-weight:650;color:#fff;margin-bottom:14px;}
+.rdot{width:8px;height:8px;border-radius:50%;background:var(--green);}
+.live{margin-left:auto;font-size:10px;letter-spacing:.08em;color:var(--green);border:1px solid #1f6b34;padding:2px 7px;border-radius:5px;}
+.card{background:var(--rcard);border:1px solid var(--rline);border-radius:13px;padding:14px;margin-bottom:13px;}
+.ctitle{display:flex;align-items:center;gap:7px;font-size:11px;letter-spacing:.07em;color:#9aa0ad;margin-bottom:13px;}
+.bolt{color:var(--amber);}
+.stage{display:flex;align-items:center;gap:10px;padding:5px 0;font-size:13px;color:#aeb4c0;}
+.mk{width:20px;height:20px;border-radius:50%;flex:none;display:grid;place-items:center;font-size:11px;font-weight:800;border:2px solid #333a47;color:#5b6271;}
+.stage.done .mk{background:var(--green);border-color:var(--green);color:#04210e;}
+.stage.done .slab{color:#e9ecf1;}
+.stage.run .mk{border-color:var(--acc);border-top-color:transparent;animation:spin .8s linear infinite;}
+.stage.run .slab{color:#fff;}
+.stage.skip{opacity:.4;}
+.stage.skip .mk{border-style:dashed;}
+@keyframes spin{to{transform:rotate(360deg)}}
+.slab{flex:1;}
+.tag{font-size:9px;font-weight:700;letter-spacing:.05em;color:var(--amber);border:1px solid #5a4a1c;border-radius:4px;padding:1px 5px;}
+.arr{color:#5b6271;}
+.cnum{display:flex;align-items:center;gap:8px;font-size:11px;letter-spacing:.06em;color:#9aa0ad;margin-bottom:11px;}
+.cnum .n{width:18px;height:18px;border-radius:5px;background:var(--amber);color:#3a2c05;display:grid;place-items:center;font-weight:800;font-size:11px;}
+.cnum .tag{margin-left:auto;color:var(--red);border-color:#6b2420;}
+.ctxt{font-size:13px;color:#dfe3ea;}
+.csub{margin-top:7px;font-size:12px;color:#7f8694;}
+.muted{color:#7f8694;}
+.small{font-size:12px;}
+.rrisk{display:flex;gap:8px;align-items:flex-start;font-size:12.5px;color:#c3c8d2;margin-bottom:6px;}
+.rx{flex:none;width:15px;height:15px;border-radius:50%;background:#5a4a1c;color:var(--amber);display:grid;place-items:center;font-size:9px;font-weight:800;margin-top:1px;}
+.dlist{margin-top:10px;border-top:1px solid var(--rline);padding-top:10px;display:flex;flex-direction:column;gap:8px;}
+.drow{display:flex;justify-content:space-between;gap:10px;font-size:12px;}
+.dname{color:#9aa0ad;text-transform:capitalize;}
+.dval{color:#6f7682;text-align:right;}
+.dval.set{color:#7fd99a;}
+.crow{font-size:12px;margin-bottom:6px;color:#c3c8d2;}
+.crow b{color:#fff;}
+.arow{display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:5px;}
+.hash{font-family:ui-monospace,Menlo,monospace;font-size:10.5px;color:#7fd99a;word-break:break-all;background:#0e1622;border:1px solid #173024;border-radius:7px;padding:8px;margin:4px 0 9px;}
+.chainok{font-size:12px;color:#7fd99a;}
+.chainok .ok,.arow .ok{color:var(--green);}
+@media(max-width:880px){.rail{display:none;}}
 `;

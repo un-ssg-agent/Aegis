@@ -39,6 +39,7 @@ ROOT = os.path.abspath(os.path.join(HERE, ".."))
 sys.path.insert(0, os.path.join(ROOT, "mcp-servers", "compliance-auditor"))
 import core          # noqa: E402  (audit hash chain)
 import llm_client    # noqa: E402  (the 3 providers)
+import agent         # noqa: E402  (web coding agent — AGENTS.md gate + codegen)
 
 THRESHOLD = float(os.environ.get("ALARM_THRESHOLD", "0.6"))
 
@@ -119,10 +120,27 @@ class AckIn(BaseModel):
     note: str = ""
 
 
+class GenerateIn(BaseModel):
+    prompt: str
+    choices: dict | None = None   # {} on first call; filled after the dev picks options
+
+
 @app.get("/")
 def index():
     return {"service": "ssgcheck-monitor", "ui": "run monitor-web (Next.js) on :3000",
-            "endpoints": ["/assess", "/api/alarms", "/api/ack"]}
+            "endpoints": ["/api/generate", "/assess", "/api/alarms", "/api/ack"]}
+
+
+@app.post("/api/generate")
+def generate_endpoint(body: GenerateIn):
+    """Web coding agent: flag child-directed work, present developer choices, then
+    generate code under AGENTS.md, logging the decision to the hash chain."""
+    if not body.prompt.strip():
+        return JSONResponse({"error": "prompt required"}, 400)
+    try:
+        return agent.generate(body.prompt, body.choices or {})
+    except Exception as e:
+        return JSONResponse({"error": f"{type(e).__name__}: {e}"}, 502)
 
 
 @app.post("/assess")
