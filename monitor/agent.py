@@ -126,3 +126,127 @@ def generate(prompt: str, choices: dict | None = None, session: str = "web") -> 
         data["audit_seq"] = rec["seq"]
         data["audit_hash"] = rec["hash"]
     return data
+
+
+# ───────────────────────── child-facing safeguarding chat ─────────────────────────
+
+def _load_child_policy() -> str:
+    for name in ("child-policy.md", "AGENTS-child.md"):
+        p = os.path.join(ROOT, name)
+        if os.path.exists(p):
+            with open(p, encoding="utf-8") as f:
+                return f.read()
+    return _load_agents_md()  # fall back to the dev policy if the child file is missing
+
+
+CHILD_CONTRACT = """
+== RUNTIME OUTPUT CONTRACT (read carefully) ==
+You are the child-facing assistant. Reply with ONLY one JSON object — no markdown
+fences, no prose outside the object. First write the child-facing reply, then the
+internal safeguarding assessment. The child NEVER sees the assessment; keep all
+scores and labels OUT of "reply".
+
+{
+  "reply": "<calm, bounded, age-appropriate reply to the child>",
+  "assessment": {
+    "bullying":  {"score": 0, "reason": "<one short sentence>"},
+    "grooming":  {"score": 0, "reason": "<one short sentence>"},
+    "abuse":     {"score": 0, "reason": "<one short sentence>"},
+    "self_harm": {"score": 0, "reason": "<one short sentence>"},
+    "distress":  {"score": 0, "reason": "<one short sentence>"}
+  },
+  "urgency": 0,
+  "confidence": "Low|Medium|High",
+  "pattern": "Isolated|Repeated|Sustained|Escalating|Unknown",
+  "escalation": "S0",
+  "primary_concern": "Bullying|Grooming|Abuse|Self-Harm|Distress|Urgent Safety|None",
+  "secondary_concerns": [],
+  "human_review": false
+}
+
+Each score is 0–9 per the rubric. Every domain gets a one-sentence reason even when
+the score is 0 (e.g. "no bullying indicators"). Set escalation per the S0–S7 rules and
+set human_review true when escalation is S4 or higher. Never reveal scores or labels in
+"reply". Never provide self-harm/violence methods or anything the policy prohibits.
+"""
+
+_DOMAINS = ("bullying", "grooming", "abuse", "self_harm", "distress")
+
+
+def _esc_int(esc) -> int:
+    try:
+        return int(str(esc).strip().upper().lstrip("S") or 0)
+    except Exception:
+        return 0
+
+
+def _risk_level(esc_i: int) -> str:
+    if esc_i >= 6:
+        return "HIGH_RISK"
+    if esc_i >= 4:
+        return "CONCERNING"
+    if esc_i >= 2:
+        return "SENSITIVE"
+    return "SAFE"
+
+
+def child_chat(message: str, session: str = "web-child") -> dict:
+    """Run one child-facing turn: produce a safe reply + a 5-axis safeguarding
+    assessment, and (at S4+) log the escalation to the tamper-evident chain."""
+    system = f"{_load_child_policy()}\n\n{CHILD_CONTRACT}"
+    msg, provider = llm_client.chat(
+        [{"role": "system", "content": system},
+         {"role": "user", "content": (message or "").strip()}],
+        temperature=0.2)
+
+    data = _extract_json(msg.get("content", "")) or {}
+    assessment = data.get("assessment") or {}
+    # normalize: guarantee all five axes with a numeric score + reason
+    norm = {}
+    for d in _DOMAINS:
+        a = assessment.get(d) or {}
+        try:
+            sc = max(0, min(9, int(round(float(a.get("score", 0))))))
+        except Exception:
+            sc = 0
+        norm[d] = {"score": sc, "reason": (a.get("reason") or "no clear indicators").strip()}
+
+    esc = str(data.get("escalation", "")).strip().upper()
+    if not esc.startswith("S"):
+        # derive a baseline if the model omitted it (distress excluded from baseline)
+        top = max(norm[d]["score"] for d in ("bullying", "grooming", "abuse", "self_harm"))
+        esc = "S" + str({0: 0, 1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 6: 4, 7: 5, 8: 5, 9: 6}[top])
+    esc_i = _esc_int(esc)
+    human_review = bool(data.get("human_review")) or esc_i >= 4
+
+    result = {
+        "reply": (data.get("reply") or "I'm here to listen. Can you tell me a little more?").strip(),
+        "assessment": norm,
+        "urgency": max(0, min(9, int(data.get("urgency", 0) or 0))) if str(data.get("urgency", "")).strip().isdigit() else 0,
+        "confidence": data.get("confidence", "Medium"),
+        "pattern": data.get("pattern", "Unknown"),
+        "escalation": esc,
+        "primary_concern": data.get("primary_concern", "None"),
+        "secondary_concerns": data.get("secondary_concerns", []) or [],
+        "human_review": human_review,
+        "provider": provider,
+    }
+
+    # log to the tamper-evident chain only when a human takes over (S4+)
+    if human_review:
+        overall = max(norm[d]["score"] for d in _DOMAINS)
+        by_measure = {d: norm[d]["score"] for d in _DOMAINS}
+        rec = core.append_decision(
+            ROOT, "child-safety",
+            f"chat conv_{session.replace('-', '_')} risk_level={_risk_level(esc_i)} overall={overall}",
+            [result["primary_concern"]] + list(result["secondary_concerns"]),
+            "per-measure safeguarding assessment of a child-facing conversation",
+            f"ESCALATED to human review — primary: {result['primary_concern']} ({esc})",
+            rationale="; ".join(f"{d} {norm[d]['score']}: {norm[d]['reason']}" for d in _DOMAINS if norm[d]["score"] >= 4)
+                      or f"primary {result['primary_concern']}",
+            test_results=json.dumps({"by_measure": by_measure}),
+            ai_act_ref="UN CRC arts 3, 12, 16, 19, 34; EU AI Act (rights-sensitive)",
+            model=provider, session=session)
+        result["audit_seq"] = rec["seq"]
+        result["audit_hash"] = rec["hash"]
+    return result

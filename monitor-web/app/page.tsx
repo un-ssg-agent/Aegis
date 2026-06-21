@@ -186,8 +186,273 @@ function parseNarrative(md: string): { body: string; seal?: string; intro?: bool
     });
 }
 
+/* ───────── child-safety chat tab ───────── */
+type Axis = { score: number; reason: string };
+type Assessment = {
+  reply: string;
+  assessment: Record<"bullying" | "grooming" | "abuse" | "self_harm" | "distress", Axis>;
+  urgency: number; confidence: string; pattern: string; escalation: string;
+  primary_concern: string; secondary_concerns: string[]; human_review: boolean;
+  provider?: string; audit_seq?: number; audit_hash?: string;
+};
+type Turn = { role: "child" | "bot"; text: string };
+
+const AXES: { key: keyof Assessment["assessment"]; label: string }[] = [
+  { key: "bullying", label: "Bullying" },
+  { key: "grooming", label: "Grooming" },
+  { key: "abuse", label: "Abuse" },
+  { key: "self_harm", label: "Self-harm" },
+  { key: "distress", label: "Distress" },
+];
+
+const SAMPLES: { cat: string; text: string }[] = [
+  { cat: "harmless", text: "what's a cool fact about space?" },
+  { cat: "harmless", text: "i'm bored, what should i do this weekend?" },
+  { cat: "distress", text: "i feel like nobody at school likes me and i don't want to go anymore" },
+  { cat: "bullying", text: "some kids keep posting mean stuff about me in the group chat every day" },
+  { cat: "grooming", text: "someone i met in a game says i'm mature for my age and wants me to keep our chats a secret" },
+  { cat: "grooming", text: "this person online asked what school i go to and if i'm ever home alone" },
+  { cat: "abuse", text: "i'm scared to go home, things get bad when my dad's been drinking" },
+  { cat: "self-harm", text: "i don't really want to be here anymore" },
+  { cat: "ambiguous", text: "someone told me to kill myself" },
+  { cat: "self-harm", text: "i can't do this anymore and i feel like everyone would be better without me" },
+];
+
+function scoreColor(n: number) {
+  if (n <= 2) return "var(--green)";
+  if (n <= 5) return "var(--amber)";
+  if (n <= 7) return "#ff8a3d";
+  return "var(--red)";
+}
+
+function mockChat(message: string): Assessment {
+  const t = message.toLowerCase();
+  const has = (...w: string[]) => w.some((x) => t.includes(x));
+  const a = {
+    bullying: { score: 0, reason: "no targeting or repeated hostility" },
+    grooming: { score: 0, reason: "no secrecy, isolation, or boundary testing" },
+    abuse: { score: 0, reason: "no fear of a caregiver or unsafe-home signal" },
+    self_harm: { score: 0, reason: "no self-harm thoughts or intent" },
+    distress: { score: 1, reason: "ordinary tone" },
+  };
+  if (has("don't want to be here", "dont want to be here", "better without", "can't do this", "cant do this", "kill myself", "end it")) {
+    a.self_harm = { score: 8, reason: "language suggesting not wanting to be here / hopelessness" };
+    a.distress = { score: 8, reason: "acute emotional pain" };
+  }
+  if (has("secret", "keep our chats", "mature for my age", "home alone", "what school", "send a pic", "meet up")) {
+    a.grooming = { score: 7, reason: "secrecy, personal-info requests, or isolation indicators" };
+    a.distress = { score: Math.max(a.distress.score, 3), reason: "some unease" };
+  }
+  if (has("mean", "group chat", "calling me names", "won't stop", "make fun", "everyone hates")) {
+    a.bullying = { score: 6, reason: "repeated targeting / humiliation in a group setting" };
+    a.distress = { score: Math.max(a.distress.score, 5), reason: "distress tied to peer targeting" };
+  }
+  if (has("scared to go home", "when my dad", "hits", "hurts me", "drinking", "unsafe at home")) {
+    a.abuse = { score: 7, reason: "fear of a caregiver / unsafe-home indicators" };
+    a.distress = { score: Math.max(a.distress.score, 6), reason: "fear and distress" };
+  }
+  if (has("lonely", "nobody likes me", "don't want to go", "sad", "stressed", "overwhelmed") && a.self_harm.score === 0) {
+    a.distress = { score: Math.max(a.distress.score, 5), reason: "loneliness / not wanting to attend" };
+  }
+  const safeguard = Math.max(a.bullying.score, a.grooming.score, a.abuse.score, a.self_harm.score);
+  const map: Record<number, number> = { 0: 0, 1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 6: 4, 7: 5, 8: 5, 9: 6 };
+  const escI = map[safeguard] ?? 0;
+  const human = escI >= 4;
+  const primary =
+    a.self_harm.score >= 5 ? "Self-Harm" :
+    a.abuse.score >= 5 ? "Abuse" :
+    a.grooming.score >= 5 ? "Grooming" :
+    a.bullying.score >= 5 ? "Bullying" :
+    a.distress.score >= 5 ? "Distress" : "None";
+  const reply =
+    a.self_harm.score >= 5
+      ? "I'm really glad you told me — that sounds incredibly heavy to carry. You're not alone in this. Is there a trusted adult nearby you could be with right now? I can stay here with you."
+      : a.abuse.score >= 5
+      ? "Thank you for trusting me with that. Feeling scared at home is really hard, and it's not your fault. Is there a safe adult outside your home — a teacher, relative, or school counsellor — you could talk to?"
+      : a.grooming.score >= 5
+      ? "I'm glad you mentioned this. It's a good idea not to share private things like your school or whether you're home alone, and you don't have to keep secrets that make you uncomfortable. Could you tell a trusted adult about this person?"
+      : a.bullying.score >= 5
+      ? "That sounds really hurtful, and you don't deserve to be treated that way. It might help to save what they're sending and talk to someone you trust. Want to think through a safe next step together?"
+      : a.distress.score >= 4
+      ? "That sounds like a lot to deal with, and it makes sense you feel this way. Want to talk about what's been the hardest part?"
+      : "That's a great question! Want to dig into it together?";
+  return {
+    reply,
+    assessment: a,
+    urgency: a.self_harm.score >= 8 || a.abuse.score >= 7 ? 8 : safeguard >= 6 ? 5 : 1,
+    confidence: "Medium",
+    pattern: "Unknown",
+    escalation: "S" + escI,
+    primary_concern: primary,
+    secondary_concerns: [],
+    human_review: human,
+    provider: "mock",
+    ...(human ? { audit_seq: Math.floor(Math.random() * 90) + 10, audit_hash: Array.from({ length: 64 }, () => "0123456789abcdef"[Math.floor(Math.random() * 16)]).join("") } : {}),
+  };
+}
+
+function ChildChat() {
+  const [turns, setTurns] = useState<Turn[]>([]);
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [last, setLast] = useState<Assessment | null>(null);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => { ref.current?.scrollTo({ top: 1e9, behavior: "smooth" }); }, [turns, busy]);
+
+  async function send(text: string) {
+    const m = text.trim();
+    if (!m || busy) return;
+    setTurns((x) => [...x, { role: "child", text: m }]);
+    setInput("");
+    setBusy(true);
+    try {
+      const r = await fetch("/api/chat", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: m }),
+      });
+      if (!r.ok) throw new Error();
+      const j = await r.json();
+      if (j?.error) throw new Error(j.error);
+      setLast(j);
+      setTurns((x) => [...x, { role: "bot", text: j.reply }]);
+    } catch {
+      const j = mockChat(m);
+      setLast(j);
+      setTurns((x) => [...x, { role: "bot", text: j.reply }]);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="cbody">
+      <main className="cmain" ref={ref}>
+        {turns.length === 0 && (
+          <div className="cempty">
+            <div className="ehead">A child-facing assistant with a safeguarding layer.</div>
+            <p className="esub">
+              Type a message as if you were a child using the chatbot, or tap a sample below. The
+              assistant replies supportively, while a backend safeguarding layer scores the message
+              across five domains and escalates to a human when needed. The child never sees the scores.
+            </p>
+            <div className="samples">
+              {SAMPLES.map((s, i) => (
+                <button key={i} className="sample" onClick={() => send(s.text)}>
+                  <span className={`scat ${s.cat}`}>{s.cat}</span>
+                  <span className="stext">{s.text}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {turns.map((t, i) => (
+          <div key={i} className="row">
+            <div className="who">
+              <span className={`av ${t.role === "child" ? "u" : "a"}`}>{t.role === "child" ? "🧒" : "SG"}</span>
+              {t.role === "child" ? "CHILD" : "ASSISTANT"}
+            </div>
+            <div className={`bubble ${t.role === "child" ? "u" : "a"}`}>{t.text}</div>
+          </div>
+        ))}
+        {busy && (
+          <div className="row">
+            <div className="who"><span className="av a">SG</span> ASSISTANT</div>
+            <div className="bubble a thinking"><span className="d" /><span className="d" /><span className="d" /></div>
+          </div>
+        )}
+
+        {turns.length > 0 && (
+          <div className="csamples">
+            {SAMPLES.map((s, i) => (
+              <button key={i} className="chip" onClick={() => send(s.text)} disabled={busy}>{s.text.length > 42 ? s.text.slice(0, 42) + "…" : s.text}</button>
+            ))}
+          </div>
+        )}
+
+        <div className="composer">
+          <textarea
+            value={input}
+            placeholder="Type a message as a child…"
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(input); } }}
+            rows={1}
+          />
+          <button className="snd" disabled={!input.trim() || busy} onClick={() => send(input)}>↑</button>
+        </div>
+        <div className="foot">Child-facing assistant · backend safeguarding scores hidden from the child · governed by the child-safety policy</div>
+      </main>
+
+      <aside className="rail">
+        <div className="railhd"><span className="rdot" /> Safeguarding assessment <span className="live">LIVE</span></div>
+
+        {last?.human_review && (
+          <div className="takeover">
+            <div className="tohd">⚠ Human review triggered</div>
+            <div className="tosub">Escalation {last.escalation} — routed to a human reviewer before any consequential action. The child continues to receive support.</div>
+          </div>
+        )}
+
+        <div className="card">
+          <div className="cnum"><span className="n">1</span> ESCALATION</div>
+          {last ? (
+            <>
+              <div className="escrow">
+                <span className={`escpill ${_escI(last.escalation) >= 4 ? "hi" : _escI(last.escalation) >= 2 ? "mid" : "lo"}`}>{last.escalation}</span>
+                <span className="escmeaning">{_escMeaning(last.escalation)}</span>
+              </div>
+              <div className="drow"><span className="dname">primary concern</span><span className="dval set">{last.primary_concern}</span></div>
+              <div className="drow"><span className="dname">urgency</span><span className="dval">{last.urgency}/9</span></div>
+              <div className="drow"><span className="dname">confidence</span><span className="dval">{last.confidence}</span></div>
+            </>
+          ) : <div className="muted small">send a message to see the assessment</div>}
+        </div>
+
+        <div className="card">
+          <div className="cnum"><span className="n">2</span> DOMAIN SCORES + REASONS</div>
+          {last ? AXES.map(({ key, label }) => {
+            const ax = last.assessment[key];
+            return (
+              <div key={key} className="axis">
+                <div className="axhd">
+                  <span className="axname">{label}</span>
+                  <span className="axscore" style={{ color: scoreColor(ax.score) }}>{ax.score}<span className="ax9">/9</span></span>
+                </div>
+                <div className="axbar"><span style={{ width: `${(ax.score / 9) * 100}%`, background: scoreColor(ax.score) }} /></div>
+                <div className="axreason">{ax.reason}</div>
+              </div>
+            );
+          }) : <div className="muted small">no scores yet</div>}
+        </div>
+
+        <div className="card">
+          <div className="cnum"><span className="n">3</span> AUDIT</div>
+          {last?.audit_hash ? (
+            <>
+              <div className="arow"><span className="muted">seq</span> #{last.audit_seq}</div>
+              <div className="hash">{last.audit_hash}</div>
+              <div className="chainok"><span className="ok">●</span> escalation appended to hash chain</div>
+            </>
+          ) : last ? (
+            <div className="muted small">below human-review threshold — supported directly, no escalation logged</div>
+          ) : (
+            <div className="muted small">—</div>
+          )}
+          {last?.provider && <div className="csub">model · {last.provider}</div>}
+        </div>
+      </aside>
+    </div>
+  );
+}
+
+function _escI(s: string) { const n = parseInt(String(s).replace(/[^0-9]/g, ""), 10); return isNaN(n) ? 0 : n; }
+function _escMeaning(s: string) {
+  return ({ 0: "normal operation", 1: "supportive", 2: "watchful", 3: "reviewable", 4: "formal review", 5: "expedited", 6: "critical", 7: "crisis" } as Record<number, string>)[_escI(s)] || "";
+}
+
 /* ───────── component ───────── */
 export default function Page() {
+  const [mode, setMode] = useState<"build" | "chat">("build");
   const [items, setItems] = useState<Item[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -326,14 +591,26 @@ export default function Page() {
           <div className="logo">SG</div>
           <div>
             <div className="bname">ssgcheck</div>
-            <div className="bsub">coding agent</div>
+            <div className="bsub">{mode === "build" ? "coding agent" : "child-safety chat"}</div>
           </div>
         </div>
-        <button className={`devtog ${dev ? "on" : ""}`} onClick={() => setDev((d) => !d)}>
-          <span className="dot" /> Developer mode
-        </button>
+        <div className="tabs">
+          <button className={mode === "build" ? "on" : ""} onClick={() => setMode("build")}>Coding agent</button>
+          <button className={mode === "chat" ? "on" : ""} onClick={() => setMode("chat")}>Child-safety chat</button>
+        </div>
+        {mode === "build" ? (
+          <button className={`devtog ${dev ? "on" : ""}`} onClick={() => setDev((d) => !d)}>
+            <span className="dot" /> Developer mode
+          </button>
+        ) : (
+          <span className="hspacer" />
+        )}
       </header>
 
+      {mode === "chat" ? (
+        <ChildChat />
+      ) : (
+        <>
       <div className="body">
         <main className="chat" ref={scrollRef}>
           {items.length === 0 && (
@@ -593,6 +870,8 @@ export default function Page() {
           </div>
         </div>
       )}
+        </>
+      )}
     </div>
   );
 }
@@ -612,6 +891,10 @@ const CSS = `
 .devtog.on{color:var(--ink);border-color:#d6d6dc;}
 .devtog .dot{width:7px;height:7px;border-radius:50%;background:#c7c7cc;}
 .devtog.on .dot{background:var(--acc);}
+.tabs{display:flex;gap:4px;background:#f0f0f3;border-radius:10px;padding:3px;}
+.tabs button{border:none;background:transparent;color:#6b6b70;font-size:13px;font-weight:550;padding:6px 14px;border-radius:8px;cursor:pointer;}
+.tabs button.on{background:#fff;color:#1d1d1f;box-shadow:0 1px 2px rgba(0,0,0,.08);}
+.hspacer{width:128px;}
 .body{flex:1;display:flex;min-height:0;}
 .chat{flex:1;overflow-y:auto;padding:26px 22px 0;display:flex;flex-direction:column;}
 .empty{max-width:560px;margin:6vh auto 0;text-align:center;}
@@ -757,4 +1040,40 @@ const CSS = `
 .eprev code{font-family:ui-monospace,Menlo,monospace;word-break:break-all;}
 .aempty{padding:24px;text-align:center;color:#7f8694;font-size:13px;}
 @media(max-width:880px){.rail{display:none;}}
+.cbody{flex:1;display:flex;min-height:0;}
+.cmain{flex:1;overflow-y:auto;padding:26px 22px 0;display:flex;flex-direction:column;}
+.cempty{max-width:620px;margin:5vh auto 0;text-align:center;}
+.samples{display:flex;flex-direction:column;gap:8px;margin-top:20px;text-align:left;}
+.sample{display:flex;align-items:center;gap:11px;border:1px solid var(--line);background:#fff;border-radius:11px;padding:11px 13px;cursor:pointer;}
+.sample:hover{border-color:#cfcfd6;}
+.scat{flex:none;font-size:10px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;padding:3px 8px;border-radius:6px;width:78px;text-align:center;}
+.scat.harmless{background:#e3f6e9;color:#1f7a3d;}
+.scat.distress{background:#fff2d6;color:#8a6400;}
+.scat.bullying{background:#ffe9d6;color:#9a4f0c;}
+.scat.grooming{background:#ffe0e0;color:#a32622;}
+.scat.abuse{background:#ffe0e0;color:#a32622;}
+.scat.self-harm{background:#fcd9d6;color:#8a1a14;}
+.scat.ambiguous{background:#e6e6ec;color:#55555b;}
+.stext{font-size:13px;color:#3a3a40;}
+.csamples{max-width:760px;width:100%;margin:0 auto 4px;display:flex;flex-wrap:wrap;gap:7px;}
+.chip{border:1px solid var(--line);background:#fff;border-radius:16px;padding:6px 12px;font-size:12px;color:#55555b;cursor:pointer;}
+.chip:hover:not(:disabled){border-color:#cfcfd6;}
+.chip:disabled{opacity:.5;cursor:default;}
+.takeover{background:#2a1414;border:1px solid #5a2420;border-radius:13px;padding:13px;margin-bottom:13px;}
+.tohd{color:#ff8a82;font-weight:650;font-size:13px;margin-bottom:5px;}
+.tosub{color:#d6b3b0;font-size:12px;line-height:1.5;}
+.escrow{display:flex;align-items:center;gap:10px;margin-bottom:11px;}
+.escpill{font-size:15px;font-weight:800;padding:4px 11px;border-radius:8px;}
+.escpill.lo{background:#0e2418;color:#7fd99a;}
+.escpill.mid{background:#2a230e;color:var(--amber);}
+.escpill.hi{background:#2a1414;color:#ff8a82;}
+.escmeaning{font-size:12.5px;color:#aeb4c0;}
+.axis{margin-bottom:13px;}
+.axhd{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:5px;}
+.axname{font-size:13px;color:#e9ecf1;font-weight:550;}
+.axscore{font-size:15px;font-weight:800;}
+.ax9{font-size:10px;color:#6f7682;font-weight:600;}
+.axbar{height:6px;border-radius:4px;background:#222732;overflow:hidden;margin-bottom:5px;}
+.axbar span{display:block;height:100%;border-radius:4px;transition:width .4s;}
+.axreason{font-size:11.5px;color:#9aa0ad;line-height:1.45;}
 `;

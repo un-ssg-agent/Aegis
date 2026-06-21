@@ -125,10 +125,14 @@ class GenerateIn(BaseModel):
     choices: dict | None = None   # {} on first call; filled after the dev picks options
 
 
+class ChatIn(BaseModel):
+    message: str
+
+
 @app.get("/")
 def index():
     return {"service": "ssgcheck-monitor", "ui": "run monitor-web (Next.js) on :3000",
-            "endpoints": ["/api/generate", "/api/narrative", "/api/audit", "/assess", "/api/alarms", "/api/ack"]}
+            "endpoints": ["/api/generate", "/api/chat", "/api/narrative", "/api/audit", "/assess", "/api/alarms", "/api/ack"]}
 
 
 @app.post("/api/generate")
@@ -139,6 +143,19 @@ def generate_endpoint(body: GenerateIn):
         return JSONResponse({"error": "prompt required"}, 400)
     try:
         return agent.generate(body.prompt, body.choices or {})
+    except Exception as e:
+        return JSONResponse({"error": f"{type(e).__name__}: {e}"}, 502)
+
+
+@app.post("/api/chat")
+def chat_endpoint(body: ChatIn):
+    """Child-facing safeguarding chat: returns a calm child-facing reply plus the
+    internal 5-axis assessment (bullying/grooming/abuse/self-harm/distress), escalation,
+    and human-review flag. Logs to the hash chain when a human takes over (S4+)."""
+    if not body.message.strip():
+        return JSONResponse({"error": "message required"}, 400)
+    try:
+        return agent.child_chat(body.message)
     except Exception as e:
         return JSONResponse({"error": f"{type(e).__name__}: {e}"}, 502)
 
