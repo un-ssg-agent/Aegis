@@ -291,11 +291,17 @@ function mockChat(message: string): Assessment {
   };
 }
 
-function ChildChat() {
-  const [turns, setTurns] = useState<Turn[]>([]);
+function ChildChat({
+  turns, setTurns, last, setLast, onOpenAudit,
+}: {
+  turns: Turn[];
+  setTurns: React.Dispatch<React.SetStateAction<Turn[]>>;
+  last: Assessment | null;
+  setLast: React.Dispatch<React.SetStateAction<Assessment | null>>;
+  onOpenAudit: () => void;
+}) {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
-  const [last, setLast] = useState<Assessment | null>(null);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => { ref.current?.scrollTo({ top: 1e9, behavior: "smooth" }); }, [turns, busy]);
 
@@ -425,8 +431,12 @@ function ChildChat() {
           }) : <div className="muted small">no scores yet</div>}
         </div>
 
-        <div className="card">
-          <div className="cnum"><span className="n">3</span> AUDIT</div>
+        <div className="card audcard" onClick={onOpenAudit} role="button" tabIndex={0}
+          onKeyDown={(e) => { if (e.key === "Enter") onOpenAudit(); }}>
+          <div className="cnum">
+            <span className="n">3</span> AUDIT
+            <span className="viewtrail">View full trail →</span>
+          </div>
           {last?.audit_hash ? (
             <>
               <div className="arow"><span className="muted">seq</span> #{last.audit_seq}</div>
@@ -436,7 +446,7 @@ function ChildChat() {
           ) : last ? (
             <div className="muted small">below human-review threshold — supported directly, no escalation logged</div>
           ) : (
-            <div className="muted small">—</div>
+            <div className="muted small">— · click to view the chain</div>
           )}
           {last?.provider && <div className="csub">model · {last.provider}</div>}
         </div>
@@ -461,6 +471,9 @@ export default function Page() {
   const [narr, setNarr] = useState<Narrative | null>(null);
   const [auditLoading, setAuditLoading] = useState(false);
   const [auditErr, setAuditErr] = useState(false);
+  // child-chat state lifted here so it survives tab switches (ChildChat unmounts on switch)
+  const [childTurns, setChildTurns] = useState<Turn[]>([]);
+  const [childLast, setChildLast] = useState<Assessment | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -469,9 +482,11 @@ export default function Page() {
 
   function mockNarrative(): Narrative {
     const coded = items.filter((i) => i.role === "code" && i.code.audit_hash) as Extract<Item, { role: "code" }>[];
+    const childLogged = childTurns.length && childLast?.audit_hash ? 1 : 0;
+    const total = coded.length + childLogged;
     const L: string[] = ["# Compliance audit trail — reasoning log", ""];
     L.push(
-      `The hash chain is currently **intact and verified**, covering ${coded.length} recorded decision(s). ` +
+      `The hash chain is currently **intact and verified**, covering ${total} recorded decision(s). ` +
       "The prose is generated deterministically from the decision log with no model in the loop, so every sentence traces back to a sealed record."
     );
     L.push("");
@@ -486,8 +501,19 @@ export default function Page() {
       );
       L.push("");
     });
-    if (!coded.length) L.push("_No decisions have been recorded yet._");
-    return { markdown: L.join("\n"), chain_ok: true, count: coded.length, head: coded.length ? coded[coded.length - 1].code.audit_hash! : null };
+    if (childLogged && childLast) {
+      L.push(
+        `On the child-safety chat, a message scored at escalation ${childLast.escalation} with primary concern ` +
+        `**${childLast.primary_concern}** (entry #${childLast.audit_seq}). ` +
+        "Because it crossed the human-review threshold, the escalation was routed to a human reviewer before any consequential action, while the child continued to receive support. " +
+        "Legal anchor: UN CRC arts 3, 16, 19, 34; EU AI Act Art. 14 (human oversight). " +
+        `_(sealed in the chain under \`${childLast.audit_hash}\`)_`
+      );
+      L.push("");
+    }
+    if (!total) L.push("_No decisions have been recorded yet._");
+    const head = childLogged && childLast ? childLast.audit_hash! : coded.length ? coded[coded.length - 1].code.audit_hash! : null;
+    return { markdown: L.join("\n"), chain_ok: true, count: total, head };
   }
 
   async function openAudit() {
@@ -608,7 +634,13 @@ export default function Page() {
       </header>
 
       {mode === "chat" ? (
-        <ChildChat />
+        <ChildChat
+          turns={childTurns}
+          setTurns={setChildTurns}
+          last={childLast}
+          setLast={setChildLast}
+          onOpenAudit={openAudit}
+        />
       ) : (
         <>
       <div className="body">
@@ -823,6 +855,8 @@ export default function Page() {
           </aside>
         )}
       </div>
+        </>
+      )}
 
       {auditOpen && (
         <div className="modal" onClick={() => setAuditOpen(false)}>
@@ -862,15 +896,13 @@ export default function Page() {
                     </div>
                   ))}
                   {narr && parseNarrative(narr.markdown).length === 0 && (
-                    <div className="aempty">No decisions logged yet. Run a child-directed build to create the first entry.</div>
+                    <div className="aempty">No decisions logged yet. Run a child-directed build or child-safety chat escalation to create the first entry.</div>
                   )}
                 </div>
               </>
             )}
           </div>
         </div>
-      )}
-        </>
       )}
     </div>
   );
