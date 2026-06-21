@@ -1,7 +1,9 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 type Panel = { provider: string; scores: Record<string, number>; overall: number; reason: string };
+type CatDist = { key: string; label: string; score: number; share: number; count: number };
+type MsgLabel = { who: string; text: string; label: string; score: number };
 type Result = {
   kind: string;
   n_models: number;
@@ -13,10 +15,69 @@ type Result = {
   errors: string[];
   audit_seq?: number;
   audit_hash?: string;
+  distribution?: CatDist[];
+  dominant?: string | null;
+  messages?: MsgLabel[];
 };
 type Msg = { who: "Child" | "Adult"; text: string };
 
 const MODELS = ["deepseek", "openai", "gemini"] as const;
+
+// Fixed visual identity per risk category: a color (hue = category) used by the
+// distribution chart, the legend dots, and the per-message chips. Fill/length
+// encodes severity separately, so color never doubles as a score.
+const CAT: Record<string, { label: string; hex: string; dot: string }> = {
+  grooming:          { label: "grooming",          hex: "#a855f7", dot: "bg-purple-500" },
+  bullying:          { label: "bullying",          hex: "#f97316", dot: "bg-orange-500" },
+  suicidal_ideation: { label: "suicidal ideation", hex: "#ef4444", dot: "bg-red-500" },
+  self_harm:         { label: "self harm",         hex: "#be123c", dot: "bg-rose-700" },
+  pii_exposure:      { label: "PII exposure",      hex: "#3b82f6", dot: "bg-blue-500" },
+  distress:          { label: "distress",          hex: "#06b6d4", dot: "bg-cyan-500" },
+  fairness:          { label: "fairness",          hex: "#8b5cf6", dot: "bg-violet-500" },
+  privacy:           { label: "privacy",           hex: "#3b82f6", dot: "bg-blue-500" },
+  security:          { label: "security",          hex: "#ef4444", dot: "bg-red-500" },
+};
+const catLabel = (k: string) => CAT[k]?.label ?? k.replace(/_/g, " ");
+const catHex = (k: string) => CAT[k]?.hex ?? "#64748b";
+
+// Demo data so the sidebar visualization can be reviewed without a live backend.
+const MOCK_MSGS: Msg[] = [
+  { who: "Adult", text: "hey, are you home alone tonight?" },
+  { who: "Child", text: "yeah my parents are out till late" },
+  { who: "Adult", text: "cool — don't tell anyone we talk, it's our little secret 😉" },
+  { who: "Child", text: "sometimes i feel like no one would even miss me" },
+];
+const MOCK_RES: Result = {
+  kind: "conversation",
+  n_models: 3,
+  panel: [
+    { provider: "deepseek:deepseek-chat", scores: {}, overall: 0.74, reason: "secrecy + isolation probing" },
+    { provider: "openai:gpt-4o-mini", scores: {}, overall: 0.69, reason: "grooming pattern, distress signal" },
+    { provider: "gemini:1.5-flash", scores: {}, overall: 0.71, reason: "self-worth statement is high risk" },
+  ],
+  by_measure: { grooming: 0.71, bullying: 0.12, suicidal_ideation: 0.78, self_harm: 0.34, pii_exposure: 0.08, distress: 0.52 },
+  aggregate: 0.71,
+  threshold: 0.6,
+  alarm: true,
+  errors: [],
+  audit_seq: 7,
+  audit_hash: "9f2c41ab7e0d5c83aa1b",
+  dominant: "suicidal_ideation",
+  distribution: [
+    { key: "suicidal_ideation", label: "suicidal ideation", score: 0.78, share: 0.31, count: 1 },
+    { key: "grooming", label: "grooming", score: 0.71, share: 0.28, count: 2 },
+    { key: "distress", label: "distress", score: 0.52, share: 0.21, count: 0 },
+    { key: "self_harm", label: "self harm", score: 0.34, share: 0.13, count: 0 },
+    { key: "bullying", label: "bullying", score: 0.12, share: 0.05, count: 0 },
+    { key: "pii_exposure", label: "PII exposure", score: 0.08, share: 0.03, count: 0 },
+  ],
+  messages: [
+    { who: "Adult", text: "hey, are you home alone tonight?", label: "grooming", score: 0.55 },
+    { who: "Child", text: "yeah my parents are out till late", label: "none", score: 0.1 },
+    { who: "Adult", text: "cool — don't tell anyone we talk, it's our little secret 😉", label: "grooming", score: 0.71 },
+    { who: "Child", text: "sometimes i feel like no one would even miss me", label: "suicidal_ideation", score: 0.78 },
+  ],
+};
 
 function tierFor(v: number) {
   if (v >= 0.6) return { t: "HIGH", c: "bg-red-600" };
@@ -57,6 +118,68 @@ function Row({ label, value }: { label: string; value: string }) {
   );
 }
 
+// Per-message label tag shown under a chat bubble.
+function CatChip({ label, score }: { label: string; score: number }) {
+  if (!label || label === "none") return null;
+  return (
+    <span
+      className="mt-1 inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium text-white"
+      style={{ backgroundColor: catHex(label) }}
+    >
+      {catLabel(label)} · {score.toFixed(2)}
+    </span>
+  );
+}
+
+// 100%-stacked bar: each category's share of total risk (proportion by severity).
+function StackedDist({ dist }: { dist: CatDist[] }) {
+  const total = dist.reduce((a, d) => a + d.score, 0) || 1;
+  const segs = dist.filter((d) => d.score > 0);
+  if (segs.length === 0) return <div className="h-3 w-full rounded bg-slate-700" />;
+  return (
+    <div className="flex h-3 w-full overflow-hidden rounded">
+      {segs.map((d) => (
+        <div
+          key={d.key}
+          title={`${catLabel(d.key)} · ${Math.round((d.score / total) * 100)}%`}
+          style={{ width: `${(d.score / total) * 100}%`, backgroundColor: catHex(d.key) }}
+        />
+      ))}
+    </div>
+  );
+}
+
+// Distribution card: stacked share bar on top, labeled severity bars below.
+function DistCard({ dist, dominant }: { dist: CatDist[]; dominant?: string | null }) {
+  return (
+    <Card n={3} title="RISK DISTRIBUTION" badge="BY CATEGORY">
+      <StackedDist dist={dist} />
+      <div className="mb-3 mt-1.5 flex items-center justify-between text-[10px] text-slate-400">
+        <span>share of total risk</span>
+        {dominant && (
+          <span className="flex items-center gap-1">
+            dominant
+            <span className="rounded px-1.5 py-0.5 font-semibold text-white" style={{ backgroundColor: catHex(dominant) }}>
+              {catLabel(dominant)}
+            </span>
+          </span>
+        )}
+      </div>
+      {dist.map((d, i) => (
+        <div key={d.key} className="mb-1.5">
+          <div className="flex items-center gap-1.5 text-xs">
+            <span className={`h-2 w-2 shrink-0 rounded-full ${CAT[d.key]?.dot ?? "bg-slate-500"}`} />
+            <span className={i === 0 && d.score > 0 ? "font-semibold text-slate-100" : "text-slate-300"}>{d.label}</span>
+            <span className="ml-auto tabular-nums text-slate-200">{d.score.toFixed(2)}</span>
+            <span className="w-7 text-right tabular-nums text-slate-500" title="messages labeled this category">·{d.count}</span>
+          </div>
+          <Bar v={d.score} />
+        </div>
+      ))}
+    </Card>
+  );
+}
+
 export default function Page() {
   const [mode, setMode] = useState<"conversation" | "code">("conversation");
   const [speaker, setSpeaker] = useState<"Child" | "Adult">("Child");
@@ -83,6 +206,18 @@ export default function Page() {
       setLoading(false);
     }
   }
+
+  function loadMock() {
+    setMode("conversation");
+    setMsgs(MOCK_MSGS);
+    setRes(MOCK_RES);
+    setShowPanel(true);
+  }
+
+  // ?mock=1 auto-loads the demo data (for screenshots / sharing the design).
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get("mock") === "1") loadMock();
+  }, []);
 
   function send() {
     if (!input.trim()) return;
@@ -116,6 +251,9 @@ export default function Page() {
             <span className="h-2 w-2 rounded-full bg-emerald-500" />
             Online
           </span>
+          <button onClick={loadMock} className="rounded-lg border border-blue-600 px-3 py-1.5 font-medium text-blue-600">
+            Mock
+          </button>
           <button onClick={() => setShowPanel((s) => !s)} className="rounded-lg bg-blue-600 px-3 py-1.5 font-medium text-white">
             {showPanel ? "Hide Panel" : "Show Panel"}
           </button>
@@ -155,6 +293,11 @@ export default function Page() {
                         {m.who}
                       </div>
                       {m.text}
+                      {res?.messages?.[i] && (
+                        <div className={`flex ${m.who === "Child" ? "justify-end" : "justify-start"}`}>
+                          <CatChip label={res.messages[i].label} score={res.messages[i].score} />
+                        </div>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -250,19 +393,13 @@ export default function Page() {
                       <Bar v={p.overall} />
                     </div>
                   ))}
-                  <div className="mb-1 mt-3 text-[10px] uppercase tracking-wide text-slate-400">Measures (worst across panel)</div>
-                  {Object.entries(res.by_measure).map(([m, v]) => (
-                    <div key={m} className="mb-1.5">
-                      <div className="flex justify-between text-xs">
-                        <span className="text-slate-300">{m}</span>
-                        <span>{v.toFixed(2)}</span>
-                      </div>
-                      <Bar v={v} />
-                    </div>
-                  ))}
                 </Card>
 
-                <Card n={3} title="ESCALATION · THRESHOLD" badge="POLICY">
+                {res.distribution && res.distribution.length > 0 && (
+                  <DistCard dist={res.distribution} dominant={res.dominant} />
+                )}
+
+                <Card n={4} title="ESCALATION · THRESHOLD" badge="POLICY">
                   <Row label="Threshold" value={res.threshold.toFixed(2)} />
                   <Row label="Aggregate" value={res.aggregate.toFixed(2)} />
                   {res.alarm ? (
@@ -277,7 +414,7 @@ export default function Page() {
                 </Card>
 
                 {res.audit_hash && (
-                  <Card n={4} title="AUDIT · HASH CHAIN" badge="SHA-256">
+                  <Card n={5} title="AUDIT · HASH CHAIN" badge="SHA-256">
                     <Row label="seq" value={String(res.audit_seq)} />
                     <Row label="hash" value={res.audit_hash.slice(0, 16) + "…"} />
                     <div className="mt-1 text-xs text-emerald-400">appended to tamper-evident trail</div>

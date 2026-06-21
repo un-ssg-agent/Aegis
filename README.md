@@ -39,6 +39,7 @@ docs/design.md                        # full design doc: CUJs, components, roadm
 docs/advanced.md                      # advanced topics + things to explore next
 docs/demo.md                          # ~5-min live demo runbook (incl. manual tamper)
 docs/monitor.md                       # the monitor web app: setup/run/use/customize measures
+docs/risk-visualization.md            # per-message labels + risk-category distribution sidebar
 docs/onboarding.md                    # beginner setup + day-one guide for teammates
 docs/sample-report.md                 # a generated Model Card (sample)
 audit-trail/decisions.jsonl           # the tamper-evident paper trail (runtime)
