@@ -178,18 +178,31 @@ scores and labels OUT of "reply".
   "primary_concern": "Bullying|Grooming|Abuse|Self-Harm|Distress|Urgent Safety|None",
   "secondary_concerns": [],
   "human_review": false,
+  "age_status": "known_child|possible_child|known_adult|child_affected|unknown",
   "requester_role": "child_self|worried_friend|parent_or_caregiver|teacher_or_educator|unknown",
   "affected_person_role": "child_self|specific_child|group_of_children|unknown",
   "response_decision": "<one short sentence: what you included/avoided in the reply, e.g. 'calm support, asked one safety question, avoided requesting location'>"
 }
 
-requester_role / affected_person_role: read who is actually typing. If the message
-reads as a child speaking about their own situation ("I'm scared to go home"), both
-are "child_self". If it reads as someone reporting concern about another child (a
-friend, sibling, classmate) rather than themself, set requester_role to
-"worried_friend" (or "parent_or_caregiver"/"teacher_or_educator" if the wording
-indicates that role) and affected_person_role to "specific_child" or
-"group_of_children". Default to "unknown" only if genuinely unclear — do not guess
+age_status: classify who you are talking to, per the policy's Age Status axis.
+- "known_child": the user is identifiably under 18 (mentions school grade, being a kid,
+  youth game/app context, etc.).
+- "possible_child": age is unclear but child indicators exist — OR there is no clear
+  signal either way. This is the SAFE DEFAULT: if you are not sure, use "possible_child",
+  never "known_adult".
+- "known_adult": ONLY when the user is clearly an adult AND no child is affected (e.g. an
+  adult describing their own unrelated situation). This service is child-focused, so this
+  is rare.
+- "child_affected": an adult (or unknown requester) is reporting about, describing, or
+  worried about a SPECIFIC child — a parent about their kid, a teacher about a student.
+  Child-specific privacy protections still apply to that child's data.
+- "unknown": only if genuinely indeterminate; treated conservatively as a child.
+
+requester_role / affected_person_role: read who is actually typing. A child speaking
+about their own situation ("I'm scared to go home") → both "child_self". An adult/peer
+reporting about another child → requester_role "worried_friend" /
+"parent_or_caregiver" / "teacher_or_educator" and affected_person_role "specific_child"
+or "group_of_children". When in doubt, prefer the child-protective reading; never guess
 an adult-authority role from a child-sounding message.
 
 Each score is 0–9 per the rubric. Every domain gets a one-sentence reason even when
@@ -232,6 +245,27 @@ _REQUESTER_ROLE_MAP = {
     "parent_or_caregiver": "parent_or_caregiver",
     "teacher_or_educator": "teacher_or_educator",
 }
+
+# Age Status -> Protection Mode, per the policy's §3 derivation. The SAFE
+# DEFAULT is the crux: any value we don't recognize, or "unknown", collapses to
+# "possible_child" -> child-specific protections. We never silently downgrade an
+# ambiguous user to adult handling.
+_VALID_AGE_STATUS = {
+    "known_child", "possible_child", "known_adult", "child_affected", "unknown",
+}
+_PROTECTION_MODE_BY_AGE = {
+    "known_child": "child_specific",
+    "possible_child": "child_specific",
+    "child_affected": "child_affected",
+    "known_adult": "adult",
+    "unknown": "child_specific",   # conservative: treat unknown as a child
+}
+
+
+def _normalize_age_status(raw: str) -> str:
+    v = str(raw or "").strip().lower().replace("-", "_").replace(" ", "_")
+    return v if v in _VALID_AGE_STATUS else "possible_child"
+
 _AFFECTED_ROLE_MAP = {
     "child_self": "child_self",
     "specific_child": "specific_child",
@@ -286,10 +320,18 @@ def child_chat(message: str, session: str = "web-child") -> dict:
         overall = max(norm[d]["score"] for d in _DOMAINS)
         by_measure = {d: norm[d]["score"] for d in _DOMAINS}
 
+        age_status = _normalize_age_status(data.get("age_status"))
+        protection_mode = _PROTECTION_MODE_BY_AGE[age_status]
+
         requester_role = _REQUESTER_ROLE_MAP.get(
             str(data.get("requester_role", "")).strip().lower(), "child_self")
         affected_person_role = _AFFECTED_ROLE_MAP.get(
             str(data.get("affected_person_role", "")).strip().lower(), "child_self")
+        # In a child-affected case the requester is an adult but a specific child
+        # is the affected party — keep affected_person_role child-pointing if the
+        # model left it as the default self-reference.
+        if age_status == "child_affected" and affected_person_role == "child_self":
+            affected_person_role = "specific_child"
         review_tier = _REVIEW_TIER_BY_ESC.get(esc_i, "required")
         response_decision = (data.get("response_decision") or
                               "supportive reply; scores and S-level withheld from the child").strip()
@@ -297,10 +339,24 @@ def child_chat(message: str, session: str = "web-child") -> dict:
         # privacy fields: this is the live-case schema shape — never the full
         # message text, never identifiers, only structured scores + a short
         # redacted summary, scaled to escalation severity.
+        #
+        # Child vs adult differentiation (enforced here in code, not just in the
+        # prompt): when a child is the subject (child_specific) or a specific
+        # child is affected (child_affected), the policy's heightened child-
+        # privacy duties apply — shorter retention and a longer redaction list.
+        # An adult-self case (no child involved) follows baseline retention.
+        child_protected = protection_mode in ("child_specific", "child_affected")
+
         retained = ["scores", "escalation level", "review status"]
         not_retained = ["full message text", "exact name", "exact school",
                         "exact location", "contact details", "private images",
                         "hidden reasoning", "unrelated messages"]
+        if child_protected:
+            # heightened child-privacy redaction: also strip caregiver/family
+            # identifiers, device/account handles, and peer names that could
+            # expose or be used to retaliate against the child.
+            not_retained += ["caregiver/family names", "account/device handles",
+                             "names of other children", "biometric/voice data"]
         privacy_tier = "crisis_record" if esc_i >= 7 else (
             "protected_record" if esc_i >= 4 else "redacted_summary")
         if privacy_tier == "redacted_summary":
@@ -329,6 +385,9 @@ def child_chat(message: str, session: str = "web-child") -> dict:
         retention_decision_reason = (
             f"privacy tier set to {privacy_tier} to match {esc} governance "
             "intensity — least intrusive tier capable of supporting review"
+            + ("; heightened child data-minimization applied (shorter cap, "
+               "wider redaction)" if child_protected else
+               "; baseline adult retention applied (no child involved)")
         )
         clarification_decision_reason = (
             "immediate safety was unclear, so the reply asked one minimal "
@@ -337,10 +396,14 @@ def child_chat(message: str, session: str = "web-child") -> dict:
             "no safety-critical ambiguity required clarification"
         )
         identifier_avoidance_reason = (
-            "disclosing identifying details (name, school, exact location, "
-            "contact info, images) could expose the child to retaliation, "
-            "punishment, or unwanted exposure, and was not necessary to "
-            "provide support"
+            ("disclosing identifying details (name, school, exact location, "
+             "contact info, images, caregiver names) could expose the child to "
+             "retaliation, punishment, or unwanted exposure, and was not "
+             "necessary to provide support")
+            if child_protected else
+            ("identifying details were not retained because they were not "
+             "necessary to provide support and retaining them would exceed "
+             "data-minimization limits")
         )
         policy_check_reason = (
             "evaluated against retained/not-retained data and disclosure "
@@ -361,21 +424,38 @@ def child_chat(message: str, session: str = "web-child") -> dict:
         reviewer_evidence_shown = ["domain scores", "escalation level", "primary/secondary concerns"]
         if privacy_tier in ("protected_record", "crisis_record"):
             reviewer_evidence_shown.append("necessary redacted excerpt")
-        reviewer_evidence_withheld = [
-            "full message text", "exact name", "exact school",
-            "exact location", "contact details", "private images",
-        ]
-        retention_deadline = (
-            "" if privacy_tier == "no_record" else
-            {"redacted_summary": "30 days", "protected_record": "90 days",
-             "crisis_record": "incident-dependent; reviewed post-incident"}.get(privacy_tier, "")
-        )
+        # reviewer never sees, by default, the same identifiers we refuse to
+        # retain — mirror the (child-aware) not_retained list.
+        reviewer_evidence_withheld = [x for x in not_retained
+                                      if x not in ("hidden reasoning", "unrelated messages")]
+        # Retention caps: children get shorter maximums than the baseline adult
+        # case at the same tier (heightened child data-minimization). Caps are
+        # prototype defaults; production overrides via approved schedule.
+        if child_protected:
+            retention_deadline = {
+                "redacted_summary": "30 days",
+                "protected_record": "90 days",
+                "crisis_record": "1 year; post-incident minimization review within 30 days",
+            }.get(privacy_tier, "")
+        else:
+            retention_deadline = {
+                "redacted_summary": "90 days",
+                "protected_record": "180 days",
+                "crisis_record": "1 year; post-incident minimization review within 30 days",
+            }.get(privacy_tier, "")
+        if privacy_tier == "no_record":
+            retention_deadline = ""
 
         privacy_limitation_reason = (
-            "automatic external disclosure could expose the child to "
-            "retaliation, punishment, or unwanted exposure before a human "
-            "could assess the actual safety context"
-        ) if esc_i >= 6 else ""
+            ("automatic external disclosure could expose the child to "
+             "retaliation, punishment, or unwanted exposure before a human "
+             "could assess the actual safety context")
+            if (esc_i >= 6 and child_protected) else
+            ("automatic external disclosure would override the person's "
+             "autonomy and confidentiality before a human could assess the "
+             "actual safety context")
+            if esc_i >= 6 else ""
+        )
         disclosure_necessity_reason = (
             (f"escalation {esc} indicates imminent/active danger, making "
              "external disclosure eligible pending separate human "
@@ -405,7 +485,8 @@ def child_chat(message: str, session: str = "web-child") -> dict:
             affected_person_role=affected_person_role,
             operating_mode="direct_support",
             live_case=True,
-            protection_mode="child_specific",
+            protection_mode=protection_mode,
+            age_status=age_status,
             authority_category="no_direct_authority",
             privacy_tier=privacy_tier,
             retained_data=retained,

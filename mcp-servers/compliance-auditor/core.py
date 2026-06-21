@@ -66,6 +66,9 @@ _VALID_OPERATING_MODES = {
     "reviewer_support", "governance_review",
 }
 _VALID_PROTECTION_MODES = {"baseline", "child_specific", "adult", "child_affected"}
+_VALID_AGE_STATUS = {
+    "known_child", "possible_child", "known_adult", "child_affected", "unknown",
+}
 _VALID_AUTHORITY_CATEGORIES = {
     "no_direct_authority", "caregiver", "institutional", "developer",
     "reviewer", "governance",
@@ -165,6 +168,7 @@ def append_decision(
     live_case: bool = False,
     protection_mode: str = "baseline",
     authority_category: str = "no_direct_authority",
+    age_status: str = "unknown",
     # --- privacy decision fields ---
     privacy_tier: str = "no_record",
     retained_data: list | None = None,
@@ -210,6 +214,7 @@ def append_decision(
     affected_person_role = _check(affected_person_role, _VALID_AFFECTED_ROLES, "affected_person_role")
     operating_mode = _check(operating_mode, _VALID_OPERATING_MODES, "operating_mode")
     protection_mode = _check(protection_mode, _VALID_PROTECTION_MODES, "protection_mode")
+    age_status = _check(age_status, _VALID_AGE_STATUS, "age_status")
     authority_category = _check(authority_category, _VALID_AUTHORITY_CATEGORIES, "authority_category")
     privacy_tier = _check(privacy_tier, _VALID_PRIVACY_TIERS, "privacy_tier")
     external_disclosure = _check(external_disclosure, _VALID_DISCLOSURE, "external_disclosure")
@@ -254,6 +259,7 @@ def append_decision(
         "live_case": bool(live_case),
         "protection_mode": protection_mode,
         "authority_category": authority_category,
+        "age_status": age_status,
         # --- privacy decision fields ---
         "privacy_tier": privacy_tier,
         "retained_data": retained_data,
@@ -538,6 +544,13 @@ _PROTECTION_LABELS = {
     "adult": "adult-appropriate safeguarding",
     "child_affected": "child-affected safeguarding (adult requester, child impact)",
 }
+_AGE_STATUS_LABELS = {
+    "known_child": "a known child",
+    "possible_child": "a possible child (age unclear — treated as a child)",
+    "known_adult": "a known adult",
+    "child_affected": "an adult/unknown requester with a specific child affected",
+    "unknown": "an unknown age status (treated conservatively)",
+}
 _PRIVACY_TIER_LABELS = {
     "no_record": "no record was created",
     "structured_indicator": "only a structured indicator was recorded",
@@ -791,6 +804,7 @@ def render_narrative(root: str) -> str:
         requester = e.get("requester_role")
         affected = e.get("affected_person_role")
         protection = e.get("protection_mode")
+        age_status = e.get("age_status")
         live_case = e.get("live_case")
         ctx = ""
         if requester or affected or protection is not None:
@@ -800,6 +814,8 @@ def render_narrative(root: str) -> str:
             live_lbl = "Yes" if live_case else "No"
             ctx = (f" Requester role: {req_lbl}. Affected person role: {aff_lbl}. "
                    f"Protection mode: {prot_lbl}. Live safeguarding case: {live_lbl}.")
+            if age_status and age_status != "unknown":
+                ctx += f" Age status: {_AGE_STATUS_LABELS.get(age_status, age_status)}."
             if live_case is False:
                 ctx += (" Because this was not a live safeguarding case, the system "
                         "did not create a child case record or trigger safeguarding "
