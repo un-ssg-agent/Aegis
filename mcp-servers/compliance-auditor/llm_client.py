@@ -35,7 +35,7 @@ def load_env(path: str | None = None) -> dict:
 
 # provider order: cheap+reliable first, then fall back
 PROVIDERS = [
-    ("deepseek", "https://api.deepseek.com/v1", "DEEPSEEK_API_KEY", "deepseek-chat"),
+    ("deepseek", "https://api.deepseek.com/v1", "DEEPSEEK_API_KEY", "deepseek-v4-pro"),
     ("openai", "https://api.openai.com/v1", "OPENAI_API_KEY", "gpt-4o-mini"),
     ("gemini", "https://generativelanguage.googleapis.com/v1beta/openai",
      "GEMINI_API_KEY", "gemini-2.5-flash"),
