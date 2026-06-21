@@ -193,8 +193,33 @@ scores and labels OUT of "reply".
   "age_status": "known_child|possible_child|known_adult|child_affected|unknown",
   "requester_role": "child_self|worried_friend|parent_or_caregiver|teacher_or_educator|unknown",
   "affected_person_role": "child_self|specific_child|group_of_children|unknown",
-  "response_decision": "<one short sentence: what you included/avoided in the reply, e.g. 'calm support, asked one safety question, avoided requesting location'>"
+  "response_decision": "<one short sentence: what you included/avoided in the reply, e.g. 'calm support, asked one safety question, avoided requesting location'>",
+  "detected_language": "<BCP-47 code of the language the user wrote in, e.g. 'en', 'es', 'zh-Hans', 'ar', 'hi'; 'und' if you truly cannot tell>",
+  "language_confidence": "high|medium|low"
 }
+
+== LANGUAGE (read carefully) ==
+Write "reply" in the SAME language the child wrote in — detect it yourself and respond
+natively, not in English-by-default. Match their script and register (e.g. reply in
+Spanish to a Spanish message, in Traditional Chinese to Traditional Chinese, in Arabic
+to Arabic). Respond ONLY in that one language: never code-switch into English partway
+through, never append an English translation the child did not ask for, and keep the
+whole reply in their language from first word to last. If the message genuinely mixes
+languages, use the dominant one; if you truly cannot tell, use clear, simple English and
+set detected_language to "und".
+
+Two hard rules that do NOT change with language:
+1. The ASSESSMENT stays in English. All scores, reasons, escalation, primary_concern,
+   and every other field outside "reply" are written in English regardless of the
+   child's language, because human reviewers and the audit trail need one consistent
+   language. Only "reply" is localized.
+2. A language you handle less reliably is a SAFETY signal, not a reason to relax. Per
+   the policy, low confidence never makes possible serious harm "safe." If you are not
+   fluent/confident in the child's language, or the wording is ambiguous because of
+   translation/slang/dialect, set language_confidence to "low" or "medium" and reflect
+   that uncertainty in the safeguarding "confidence" field — lean toward MORE careful
+   handling and review, never less. Never downgrade a concern just because it arrived in
+   a language you find harder.
 
 == HOW TO WRITE "reply" ==
 "reply" is the only thing the child reads. A one-line acknowledgment that ends the
@@ -353,16 +378,31 @@ def child_chat(message: str, session: str = "web-child") -> dict:
     esc_i = _esc_int(esc)
     human_review = bool(data.get("human_review")) or esc_i >= 4
 
+    # Language handling: track the language the child wrote in (for transparency
+    # and review) and let low language confidence pull the safeguarding confidence
+    # DOWN — never up — so a harder-to-read language triggers more care, per policy.
+    detected_language = str(data.get("detected_language", "und")).strip() or "und"
+    language_confidence = str(data.get("language_confidence", "high")).strip().lower()
+    if language_confidence not in ("high", "medium", "low"):
+        language_confidence = "high"
+    confidence = data.get("confidence", "Medium")
+    if language_confidence == "low":
+        confidence = "Low"
+    elif language_confidence == "medium" and str(confidence).strip().lower() == "high":
+        confidence = "Medium"
+
     result = {
         "reply": (data.get("reply") or "I'm here with you. Can you tell me a bit more about what's going on?").strip(),
         "assessment": norm,
         "urgency": max(0, min(9, int(data.get("urgency", 0) or 0))) if str(data.get("urgency", "")).strip().isdigit() else 0,
-        "confidence": data.get("confidence", "Medium"),
+        "confidence": confidence,
         "pattern": data.get("pattern", "Unknown"),
         "escalation": esc,
         "primary_concern": data.get("primary_concern", "None"),
         "secondary_concerns": data.get("secondary_concerns", []) or [],
         "human_review": human_review,
+        "detected_language": detected_language,
+        "language_confidence": language_confidence,
         "provider": provider,
     }
 
@@ -590,6 +630,8 @@ def child_chat(message: str, session: str = "web-child") -> dict:
             # case grouping by session so repeated/escalating messages cluster
             case_id=f"case_{session.replace('-', '_')}",
             content_hash=content_hash,
+            interaction_language=detected_language,
+            language_confidence=language_confidence,
             redacted_summary=f"{result['primary_concern']} concern at {esc}; "
                              f"see scores and redacted excerpts for review",
             retention_tier=retention_tier,

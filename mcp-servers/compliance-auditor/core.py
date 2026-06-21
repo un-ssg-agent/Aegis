@@ -229,6 +229,9 @@ def append_decision(
     corrects_seq: int | None = None,
     # --- content-hash / minimization (never full chat) ---
     content_hash: str = "",
+    # --- interaction language (non-identifying; helps reviewers + fairness) ---
+    interaction_language: str = "und",
+    language_confidence: str = "high",
     redacted_summary: str = "",
     excerpt_ids: list | None = None,
     # --- explicit retention fields ---
@@ -350,6 +353,8 @@ def append_decision(
         "corrects_seq": corrects_seq,
         # --- content-hash / minimization ---
         "content_hash": content_hash,
+        "interaction_language": interaction_language,
+        "language_confidence": language_confidence,
         "redacted_summary": redacted_summary,
         "excerpt_ids": excerpt_ids,
         # --- explicit retention fields ---
