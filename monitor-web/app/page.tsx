@@ -292,13 +292,14 @@ function mockChat(message: string): Assessment {
 }
 
 function ChildChat({
-  turns, setTurns, last, setLast, onOpenAudit,
+  turns, setTurns, last, setLast, onOpenAudit, dev,
 }: {
   turns: Turn[];
   setTurns: React.Dispatch<React.SetStateAction<Turn[]>>;
   last: Assessment | null;
   setLast: React.Dispatch<React.SetStateAction<Assessment | null>>;
   onOpenAudit: () => void;
+  dev: boolean;
 }) {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -389,6 +390,7 @@ function ChildChat({
         <div className="foot">Child-facing assistant · backend safeguarding scores hidden from the child · governed by the child-safety policy</div>
       </main>
 
+      {dev && (
       <aside className="rail">
         <div className="railhd"><span className="rdot" /> Safeguarding assessment <span className="live">LIVE</span></div>
 
@@ -451,6 +453,7 @@ function ChildChat({
           {last?.provider && <div className="csub">model · {last.provider}</div>}
         </div>
       </aside>
+      )}
     </div>
   );
 }
@@ -624,13 +627,9 @@ export default function Page() {
           <button className={mode === "build" ? "on" : ""} onClick={() => setMode("build")}>Coding agent</button>
           <button className={mode === "chat" ? "on" : ""} onClick={() => setMode("chat")}>Child-safety chat</button>
         </div>
-        {mode === "build" ? (
-          <button className={`devtog ${dev ? "on" : ""}`} onClick={() => setDev((d) => !d)}>
-            <span className="dot" /> Developer mode
-          </button>
-        ) : (
-          <span className="hspacer" />
-        )}
+        <button className={`devtog ${dev ? "on" : ""}`} onClick={() => setDev((d) => !d)}>
+          <span className="dot" /> Developer mode
+        </button>
       </header>
 
       {mode === "chat" ? (
@@ -640,6 +639,7 @@ export default function Page() {
           last={childLast}
           setLast={setChildLast}
           onOpenAudit={openAudit}
+          dev={dev}
         />
       ) : (
         <>
@@ -926,7 +926,6 @@ const CSS = `
 .tabs{display:flex;gap:4px;background:#f0f0f3;border-radius:10px;padding:3px;}
 .tabs button{border:none;background:transparent;color:#6b6b70;font-size:13px;font-weight:550;padding:6px 14px;border-radius:8px;cursor:pointer;}
 .tabs button.on{background:#fff;color:#1d1d1f;box-shadow:0 1px 2px rgba(0,0,0,.08);}
-.hspacer{width:128px;}
 .body{flex:1;display:flex;min-height:0;}
 .chat{flex:1;overflow-y:auto;padding:26px 22px 0;display:flex;flex-direction:column;}
 .empty{max-width:560px;margin:6vh auto 0;text-align:center;}
