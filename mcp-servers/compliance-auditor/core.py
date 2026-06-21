@@ -37,7 +37,8 @@ def _canonical(record: dict) -> str:
     """Deterministic pre-image: every field EXCEPT the record's own `hash`,
     key-sorted, no incidental whitespace, UTF-8 preserved. Logger and verifier
     MUST use this identical function or hashes will never match."""
-    payload = {k: v for k, v in record.items() if k != "hash"}
+    payload = {k: v for k, v in record.items()
+               if k not in ("hash", "chain_head_after_event", "verification_status")}
     return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
@@ -62,8 +63,13 @@ _VALID_AFFECTED_ROLES = {
     "group_of_children", "hypothetical", "platform_users", "unknown",
 }
 _VALID_OPERATING_MODES = {
-    "direct_support", "proxy_concern", "developer_embedding",
-    "reviewer_support", "governance_review",
+    "direct_support",          # legacy alias (treated as direct child support)
+    "direct_child_support",
+    "direct_adult_support",
+    "proxy_concern",
+    "developer_embedding",
+    "reviewer_support",
+    "governance_review",
 }
 _VALID_PROTECTION_MODES = {"baseline", "child_specific", "adult", "child_affected"}
 _VALID_AGE_STATUS = {
@@ -77,9 +83,16 @@ _VALID_PRIVACY_TIERS = {
     "no_record", "structured_indicator", "redacted_summary",
     "protected_record", "crisis_record",
 }
-_VALID_DISCLOSURE = {"none", "eligible", "performed"}
+_VALID_DISCLOSURE = {"none", "eligible", "performed", "blocked"}
 _VALID_HUMAN_REVIEW_TIERS = {
     "none", "optional", "required", "expedited", "immediate", "crisis",
+}
+_VALID_REVIEW_POLICY = {
+    "none", "optional", "later", "required", "expedited", "immediate", "crisis",
+}
+_VALID_CHOICE_STATUS = {
+    "approved", "rejected", "missing_information",
+    "prohibited_configuration", "deployment_not_approved",
 }
 _VALID_AUTHORIZATION_STATUS = {
     "not_applicable", "pending", "authorized", "denied",
@@ -89,13 +102,36 @@ _VALID_AUTHORIZATION_STATUS = {
 # own fields below — never asked of the model — so a "pass" can never be an
 # LLM's unverifiable self-assessment. Add new IDs here; never repurpose one.
 _POLICY_CHECK_IDS = (
-    "CRC16",                       # UN CRC art.16 — child's right to privacy
-    "GC25-Privacy",                # UNCRC General Comment 25 — privacy by design
-    "UNICEF-PDP-Minimization",     # UNICEF policy guidance — data minimization
-    "UNICEF-AI-Privacy",           # UNICEF AI/children guidance — privacy safeguards
-    "UNESCO-Proportionality",      # UNESCO AI ethics — proportionate/least-intrusive response
-    "EUAI-Governance-Implementation",  # EU AI Act — human oversight implemented, not just stated
+    "CRC16_PRIVACY",                  # UN CRC art.16 — child's right to privacy
+    "GC25_PRIVACY",                   # UNCRC General Comment 25 — privacy by design
+    "UNICEF_PDP_MINIMIZATION",        # UNICEF policy guidance — data minimization
+    "UNICEF_AI_PRIVACY",              # UNICEF AI/children guidance — privacy safeguards
+    "UNESCO_PROPORTIONALITY",         # UNESCO AI ethics — proportionate/least-intrusive response
+    "EUAI_HUMAN_OVERSIGHT",           # EU AI Act — human oversight implemented, not just stated
 )
+
+# Policy registry: source/description for each check ID, plus whether the check
+# is a MANDATORY safeguard (an UNKNOWN/FAIL on a mandatory check should block
+# deployment or force correction, per the governance policy). Rendered ONCE in
+# the narrative header; individual events reference IDs only, so source text is
+# not repeated per event.
+_POLICY_REGISTRY = {
+    "CRC16_PRIVACY":           {"source": "UN CRC Article 16 (child privacy)", "mandatory": True},
+    "GC25_PRIVACY":            {"source": "UNCRC General Comment 25 (privacy by design)", "mandatory": True},
+    "UNICEF_PDP_MINIMIZATION": {"source": "UNICEF policy guidance (data minimization)", "mandatory": True},
+    "UNICEF_AI_PRIVACY":       {"source": "UNICEF AI/children guidance (privacy safeguards)", "mandatory": False},
+    "UNESCO_PROPORTIONALITY":  {"source": "UNESCO AI ethics (proportionality)", "mandatory": False},
+    "EUAI_HUMAN_OVERSIGHT":    {"source": "EU AI Act (human oversight implemented)", "mandatory": True},
+}
+# IDs used before the registry rename, kept so legacy records still resolve.
+_POLICY_ID_ALIASES = {
+    "CRC16": "CRC16_PRIVACY",
+    "GC25-Privacy": "GC25_PRIVACY",
+    "UNICEF-PDP-Minimization": "UNICEF_PDP_MINIMIZATION",
+    "UNICEF-AI-Privacy": "UNICEF_AI_PRIVACY",
+    "UNESCO-Proportionality": "UNESCO_PROPORTIONALITY",
+    "EUAI-Governance-Implementation": "EUAI_HUMAN_OVERSIGHT",
+}
 
 
 def _evaluate_policy_checks(
@@ -105,11 +141,14 @@ def _evaluate_policy_checks(
     human_review_tier: str,
     privacy_tier: str,
 ) -> dict:
-    """Deterministically score each policy-check ID as pass/fail/NA from the
-    record's own privacy fields. No model input. Conservative by design:
-    anything ambiguous fails rather than silently passing."""
+    """Deterministically score each policy-check ID as pass/fail/na/unknown from
+    the record's own privacy fields. No model input. Conservative by design:
+    anything ambiguous resolves to fail or unknown rather than silently passing.
+    'unknown' means the fields needed to evaluate the check were not present —
+    for a mandatory check that is a blocking condition, surfaced in the narrative."""
     retained = [str(x).lower() for x in (retained_data or [])]
     not_retained = [str(x).lower() for x in (not_retained_data or [])]
+    fields_present = bool(retained or not_retained or privacy_tier)
     full_convo_retained = any("full conversation" in x or "full chat" in x for x in retained)
     excessive_pii = any(
         any(term in x for term in ("exact location", "exact address", "school name",
@@ -121,25 +160,27 @@ def _evaluate_policy_checks(
     )
 
     checks = {
-        # CRC16: privacy preserved unless full-conversation retention happened.
-        "CRC16": "fail" if full_convo_retained else "pass",
-        # GC25-Privacy: privacy-by-design unless excessive identifiers were kept.
-        "GC25-Privacy": "fail" if excessive_pii else "pass",
-        # UNICEF-PDP-Minimization: only applies once a privacy tier is set.
-        "UNICEF-PDP-Minimization": (
+        # CRC16_PRIVACY: privacy preserved unless full-conversation retention happened.
+        "CRC16_PRIVACY": "fail" if full_convo_retained else "pass",
+        # GC25_PRIVACY: privacy-by-design unless excessive identifiers were kept.
+        "GC25_PRIVACY": "fail" if excessive_pii else "pass",
+        # UNICEF_PDP_MINIMIZATION: only applies once a privacy tier is set; unknown
+        # if a record exists but no retention fields were recorded to evaluate.
+        "UNICEF_PDP_MINIMIZATION": (
             "na" if privacy_tier in ("", "no_record")
+            else "unknown" if not fields_present
             else "fail" if (full_convo_retained or excessive_pii) else "pass"
         ),
-        # UNICEF-AI-Privacy: no automatic external disclosure from a score alone.
-        "UNICEF-AI-Privacy": "fail" if auto_disclosure_from_score_alone else "pass",
-        # UNESCO-Proportionality: least-intrusive tier was actually used, not crisis-by-default.
-        "UNESCO-Proportionality": (
+        # UNICEF_AI_PRIVACY: no automatic external disclosure from a score alone.
+        "UNICEF_AI_PRIVACY": "fail" if auto_disclosure_from_score_alone else "pass",
+        # UNESCO_PROPORTIONALITY: least-intrusive tier was actually used, not crisis-by-default.
+        "UNESCO_PROPORTIONALITY": (
             "fail" if (privacy_tier == "crisis_record" and human_review_tier not in ("immediate", "crisis"))
             else "pass"
         ),
-        # EUAI-Governance-Implementation: human oversight was real, not symbolic,
-        # whenever a review tier above "none" was set.
-        "EUAI-Governance-Implementation": (
+        # EUAI_HUMAN_OVERSIGHT: human oversight was real, not symbolic, whenever a
+        # review tier above "none" was set.
+        "EUAI_HUMAN_OVERSIGHT": (
             "na" if human_review_tier == "none"
             else "fail" if auto_disclosure_from_score_alone else "pass"
         ),
@@ -176,8 +217,24 @@ def append_decision(
     external_disclosure: str = "none",
     disclosure_reason: str = "",
     # --- response + review fields ---
-    response_decision: str = "",
+    response_decision: dict | str | None = None,
     human_review_tier: str = "none",
+    configured_human_review_policy: str = "none",
+    human_review_triggered: bool = False,
+    # --- governance choice status ---
+    choice_status: str = "approved",
+    # --- case grouping + corrections ---
+    case_id: str = "",
+    correction_event_id: str = "",
+    corrects_seq: int | None = None,
+    # --- content-hash / minimization (never full chat) ---
+    content_hash: str = "",
+    redacted_summary: str = "",
+    excerpt_ids: list | None = None,
+    # --- explicit retention fields ---
+    retention_tier: str = "",
+    deletion_or_review_date: str = "",
+    privacy_decision_reason: str = "",
     # --- S3+ tiered transparency: why key decisions were/weren't made ---
     review_trigger_reason: str = "",
     retention_decision_reason: str = "",
@@ -219,8 +276,22 @@ def append_decision(
     privacy_tier = _check(privacy_tier, _VALID_PRIVACY_TIERS, "privacy_tier")
     external_disclosure = _check(external_disclosure, _VALID_DISCLOSURE, "external_disclosure")
     human_review_tier = _check(human_review_tier, _VALID_HUMAN_REVIEW_TIERS, "human_review_tier")
+    configured_human_review_policy = _check(
+        configured_human_review_policy, _VALID_REVIEW_POLICY, "configured_human_review_policy")
+    choice_status = _check(choice_status, _VALID_CHOICE_STATUS, "choice_status")
     human_authorization_status = _check(
         human_authorization_status, _VALID_AUTHORIZATION_STATUS, "human_authorization_status")
+
+    # response_decision: accept either a structured dict (preferred) or a bare
+    # string (legacy/simple), normalizing to a dict so the schema is stable.
+    if isinstance(response_decision, str):
+        response_decision = {"strategy": response_decision} if response_decision else {}
+    elif response_decision is None:
+        response_decision = {}
+    else:
+        response_decision = dict(response_decision)
+
+    excerpt_ids = list(excerpt_ids or [])
 
     retained_data = list(retained_data or [])
     not_retained_data = list(not_retained_data or [])
@@ -269,6 +340,22 @@ def append_decision(
         # --- response + review fields ---
         "response_decision": response_decision,
         "human_review_tier": human_review_tier,
+        "configured_human_review_policy": configured_human_review_policy,
+        "human_review_triggered": bool(human_review_triggered),
+        # --- governance choice status ---
+        "choice_status": choice_status,
+        # --- case grouping + corrections (append-only) ---
+        "case_id": case_id,
+        "correction_event_id": correction_event_id,
+        "corrects_seq": corrects_seq,
+        # --- content-hash / minimization ---
+        "content_hash": content_hash,
+        "redacted_summary": redacted_summary,
+        "excerpt_ids": excerpt_ids,
+        # --- explicit retention fields ---
+        "retention_tier": retention_tier,
+        "deletion_or_review_date": deletion_or_review_date,
+        "privacy_decision_reason": privacy_decision_reason,
         # --- S3+ tiered transparency ---
         "review_trigger_reason": review_trigger_reason,
         "retention_decision_reason": retention_decision_reason,
@@ -293,6 +380,13 @@ def append_decision(
         "prev_hash": prev_hash,           # chain link
     }
     record["hash"] = hashlib.sha256(_canonical(record).encode("utf-8")).hexdigest()
+    # Explicit chain-position fields. chain_head_after_event == this record's own
+    # hash (it becomes the new head); verification_status records that the append
+    # was made against a chain whose prior head matched prev_hash. These are
+    # written AFTER the hash is computed, so they are NOT part of the hashed
+    # canonical form (adding them pre-hash would be self-referential).
+    record["chain_head_after_event"] = record["hash"]
+    record["verification_status"] = "appended_to_verified_chain"
 
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "a", encoding="utf-8") as f:
@@ -309,6 +403,48 @@ def append_decision(
         pass
 
     return record
+
+
+def append_correction(
+    root: str,
+    corrects_seq: int,
+    reason: str,
+    corrected_by: str = "authorized human reviewer",
+    field_corrections: dict | None = None,
+) -> dict:
+    """Append an append-only CORRECTION event for an earlier sealed record.
+
+    Corrections never overwrite a sealed record — the original stays in the
+    chain exactly as logged, and this new event references it via corrects_seq
+    and a generated correction_event_id. This preserves tamper-evidence (the
+    original's hash is unchanged) while still recording that a later review
+    found and amended something. field_corrections is a small dict of
+    {field: corrected_value} describing the amendment in human-readable terms;
+    it is recorded for transparency and is NOT applied destructively to the
+    original record."""
+    entries = _read_all(root)
+    target = next((e for e in entries if e.get("seq") == corrects_seq), None)
+    if target is None:
+        raise ValueError(f"cannot correct seq {corrects_seq}: not found")
+
+    correction_id = f"corr_{corrects_seq}_{len(entries)}"
+    summary = "; ".join(f"{k} -> {v}" for k, v in (field_corrections or {}).items())
+    return append_decision(
+        root, "correction",
+        f"correction of sealed record seq {corrects_seq}",
+        ["append correction (original record preserved)",
+         "overwrite original (PROHIBITED — never done)"],
+        "corrections are append-only; the original sealed record is never altered",
+        f"CORRECTED seq {corrects_seq} by {corrected_by}",
+        rationale=reason + (f" | field corrections: {summary}" if summary else ""),
+        operating_mode="reviewer_support",
+        authority_category="reviewer",
+        choice_status="approved",
+        human_review_triggered=True,
+        configured_human_review_policy="required",
+        correction_event_id=correction_id,
+        corrects_seq=corrects_seq,
+    )
 
 
 def verify_chain(root: str):
@@ -328,6 +464,16 @@ def verify_chain(root: str):
             return (False,
                     f"BROKEN at seq {rec.get('seq', i)}: content was altered "
                     f"after it was logged.", i, prev)
+        # Derived fields are excluded from the hash pre-image, so check them
+        # explicitly: chain_head_after_event (when present) must equal this
+        # record's own hash, or someone edited the derived field to misrepresent
+        # the chain head.
+        chae = rec.get("chain_head_after_event")
+        if chae is not None and chae != rec.get("hash"):
+            return (False,
+                    f"BROKEN at seq {rec.get('seq', i)}: chain_head_after_event "
+                    f"does not match the record's own hash (derived field "
+                    f"altered).", i, prev)
         prev = rec["hash"]
     return True, f"OK: {len(entries)} entries, chain intact.", len(entries), prev
 
@@ -566,6 +712,22 @@ _REVIEW_TIER_LABELS = {
     "immediate": "immediate human review",
     "crisis": "crisis-protocol review",
 }
+_OPERATING_MODE_LABELS = {
+    "direct_support": "Direct Child Support",
+    "direct_child_support": "Direct Child Support",
+    "direct_adult_support": "Direct Adult Support",
+    "proxy_concern": "Proxy Concern",
+    "developer_embedding": "Developer Embedding",
+    "reviewer_support": "Reviewer Support",
+    "governance_review": "Governance Review",
+}
+_CHOICE_STATUS_LABELS = {
+    "approved": "APPROVED",
+    "rejected": "REJECTED",
+    "missing_information": "MISSING_INFORMATION",
+    "prohibited_configuration": "PROHIBITED_CONFIGURATION",
+    "deployment_not_approved": "DEPLOYMENT_NOT_APPROVED",
+}
 
 
 def _policy_check_sentence(checks: dict) -> str:
@@ -630,23 +792,52 @@ def _escalation_level(e: dict) -> int:
 
 
 def _has_disclosure_or_incident(e: dict) -> bool:
-    return (e.get("external_disclosure") in ("eligible", "performed")
+    """Special-case triggers that force the expanded view regardless of level:
+    any external-disclosure state beyond 'none', a human-review/override event,
+    a rejected/blocked governance choice, or a post-incident review obligation."""
+    return (e.get("external_disclosure") in ("eligible", "performed", "blocked")
             or e.get("domain") == "human-review"
+            or bool(e.get("correction_event_id"))
+            or e.get("choice_status") in (
+                "rejected", "prohibited_configuration", "deployment_not_approved")
             or bool(e.get("post_incident_review_deadline")))
 
 
+def _is_governance_decision(e: dict) -> bool:
+    """A configuration/design/governance choice (build-X, pick-policy) rather
+    than a per-message safeguarding assessment. These always stay visible — they
+    are exactly the 'rejected config / governance' events the spec wants
+    expanded — and must never be compacted to an S0-S1 row."""
+    trigger = str(e.get("trigger", ""))
+    # per-message events carry a risk_level= marker or a risk-panel trigger;
+    # governance decisions present explicit options to choose between.
+    if "risk_level=" in trigger or "risk panel" in trigger:
+        return False
+    if e.get("domain") in ("fairness", "code"):
+        return True
+    opts = e.get("options_presented") or []
+    return len(opts) >= 2 and not str(e.get("user_choice", "")).startswith("ESCALAT")
+
+
 def _detail_level(e: dict) -> str:
-    """Length-budget rule: below S3 -> 'row' (short structured line, 5-12
-    lines worth of content compressed to ~1-2 sentences); S3-S4 -> 'summary'
-    (1-2 short paragraphs, current default behaviour); S5+ or disclosure/
-    override/incident -> 'expanded' (adds the S4+ and S6+/disclosure
-    tiered-transparency sentences)."""
-    esc = _escalation_level(e)
-    if esc >= 5 or _has_disclosure_or_incident(e):
+    """Length-budget rule (per the audit-logic spec):
+      - 'compact'  : S0-S1 per-message events with no special case -> ID/time/
+                     mode + response hash only; NO safeguarding record content.
+      - 'row'      : S2 per-message events -> short structured one-line summary.
+      - 'expanded' : S3+, OR governance/config decision, rejected config,
+                     override, incident, external disclosure, or demo -> full
+                     paragraph + tiered transparency.
+    Demo mode (env COMPLIANCE_DEMO=1) forces 'expanded' for every event."""
+    if os.environ.get("COMPLIANCE_DEMO") == "1":
         return "expanded"
-    if esc >= 3:
-        return "summary"
-    return "row"
+    if _is_governance_decision(e):
+        return "expanded"
+    esc = _escalation_level(e)
+    if esc >= 3 or _has_disclosure_or_incident(e):
+        return "expanded"
+    if esc >= 2:
+        return "row"
+    return "compact"
 
 
 def _cap_first(s: str) -> str:
@@ -750,6 +941,25 @@ def _short_row(e: dict, when: str, ctx: str) -> str:
     return line
 
 
+def _compact_row(e: dict, when: str) -> str:
+    """The 'compact' detail level for S0-S1 (no special case): per the policy,
+    only compact metadata and a response hash are recorded — NO safeguarding
+    record content (no scores, no excerpts, no concern labels)."""
+    seq = e.get("seq")
+    mode = _OPERATING_MODE_LABELS.get(e.get("operating_mode"), e.get("operating_mode", "—"))
+    rd = e.get("response_decision") or {}
+    rhash = rd.get("response_hash") if isinstance(rd, dict) else ""
+    chash = e.get("content_hash", "")
+    bits = [f"entry #{seq}", when, f"mode: {mode}",
+            f"escalation: {('S%d' % _escalation_level(e))}",
+            "no safeguarding record (S0–S1)"]
+    if chash:
+        bits.append(f"content hash: {chash[:12]}")
+    if rhash:
+        bits.append(f"response hash: {str(rhash)[:12]}")
+    return " · ".join(bits) + f". Record sealed under hash: `{e['hash']}`"
+
+
 def render_narrative(root: str) -> str:
     """Deterministically render the audit trail as a human-readable decision
     summary — one entry per record, generated from sealed audit fields. This
@@ -777,13 +987,26 @@ def render_narrative(root: str) -> str:
     L.append(f"Audit chain head: `{head}`")
     L.append("")
     L.append(
-        "This report is a human-readable summary generated deterministically "
-        "from `audit-trail/decisions.jsonl`. It summarizes sealed decision "
-        "fields, written as a deterministic decision summary generated from "
-        "sealed audit fields — not hidden chain-of-thought. The hash chain is "
-        f"currently **{status}**, covering {n} recorded decision event(s). "
-        "Each paragraph ends with the hash of the record it summarizes."
+        "This report is a deterministic summary generated from sealed audit "
+        "fields in `audit-trail/decisions.jsonl` — not hidden chain-of-thought. "
+        "Every sentence traces to a field written to the chain at decision time; "
+        "no model is in the loop when this report is produced. The hash chain is "
+        f"currently **{status}**, covering {n} recorded decision event(s). Each "
+        "entry ends with the hash of the record it summarizes. These are "
+        "source-policy *checks* and implementation references, not a claim of "
+        "legal compliance."
     )
+    L.append("")
+    # Policy registry, rendered ONCE — events below reference check IDs only, so
+    # the source text is not repeated per event.
+    L.append("## Source-policy registry")
+    L.append("")
+    for cid in _POLICY_CHECK_IDS:
+        meta = _POLICY_REGISTRY.get(cid, {})
+        tag = " *(mandatory safeguard)*" if meta.get("mandatory") else ""
+        L.append(f"- `{cid}` — {meta.get('source', cid)}{tag}")
+    L.append("")
+    L.append("## Events")
     L.append("")
     if not entries:
         L.append("_No decisions have been recorded yet._")
@@ -821,16 +1044,35 @@ def render_narrative(root: str) -> str:
                         "did not create a child case record or trigger safeguarding "
                         "escalation on this entry.")
 
-        # length-budget rule: entries below S3 with no disclosure/incident get
-        # a compact structured row instead of the full narrative paragraph.
+        # length-budget rule: S0-S1 -> compact metadata only; S2 -> short row;
+        # S3+ / special cases -> full paragraph below.
         level = _detail_level(e)
+        if level == "compact":
+            L.append(_compact_row(e, when))
+            L.append("")
+            continue
         if level == "row":
             L.append(_short_row(e, when, ctx))
             L.append("")
             continue
 
+        # --- shape 0: an append-only correction of an earlier sealed record ---
+        if domain == "correction":
+            cs_target = e.get("corrects_seq")
+            cid = e.get("correction_event_id", "")
+            s = (f"On {when}, an append-only correction was recorded for sealed "
+                 f"record seq {cs_target} (entry #{seq}, correction "
+                 f"`{cid}`). The original record was not altered — its hash and "
+                 f"content remain in the chain exactly as logged; this event "
+                 f"records the amendment alongside it.")
+            if rationale:
+                s += f" Correction: {rationale.rstrip('.')}."
+            # corrections carry their own minimal context; skip the per-message
+            # role/case framing that doesn't apply to a reviewer amendment.
+            ctx = ""
+
         # --- shape 1: a human reviewer closed an escalation -------------------
-        if domain == "human-review":
+        elif domain == "human-review":
             m = re.match(r"REVIEWED by (.+?):\s*(.+)", choice)
             who = m.group(1) if m else "a reviewer"
             disp = (m.group(2) if m else choice).replace("_", " ")
@@ -871,7 +1113,7 @@ def render_narrative(root: str) -> str:
                 quoted = _join([f"\u201c{d}\u201d" for d in signals])
                 s += f" Concretely, it matched {quoted}."
             s += (" Because a child may be at risk, the recorded decision was "
-                  "to route this to a human monitor rather than clear it "
+                  "to route this to an authorized human reviewer rather than clear it "
                   "automatically.")
 
         # --- shape 3: a multi-model risk panel voted -------------------------
@@ -892,7 +1134,7 @@ def render_narrative(root: str) -> str:
                 s += f" Recorded model scores: {vote_text}."
             if measures:
                 s += f" Recorded per-measure breakdown: {measures}."
-            s += (" The recorded decision was to escalate to a human monitor."
+            s += (" The recorded decision was to escalate to an authorized human reviewer."
                   if escalated else
                   " The recorded decision was not to escalate.")
 
@@ -912,13 +1154,68 @@ def render_narrative(root: str) -> str:
 
         s += ctx
 
-        review_tier = e.get("human_review_tier")
-        if review_tier:
-            s += f" Human review tier: {_REVIEW_TIER_LABELS.get(review_tier, review_tier)}."
+        # operating mode (dynamic context label, not developer-centric wording)
+        op = e.get("operating_mode")
+        if op:
+            s += f" Operating mode: {_OPERATING_MODE_LABELS.get(op, op)}."
 
-        resp_decision = e.get("response_decision")
-        if resp_decision:
-            s += f" Response decision: {resp_decision.rstrip('.')}."
+        # governance choice status — surface non-approval prominently
+        cs = e.get("choice_status")
+        if cs and cs != "approved":
+            s += (f" **Choice status: {_CHOICE_STATUS_LABELS.get(cs, cs)}** — this "
+                  "configuration was not accepted as-is.")
+        elif cs == "approved" and domain in ("child-safety", "fairness", "code", "privacy", "security") and e.get("options_presented"):
+            s += f" Choice status: {_CHOICE_STATUS_LABELS.get(cs, cs)}."
+
+        # case grouping
+        if e.get("case_id"):
+            s += f" Case ID: {e['case_id']}."
+
+        # split human-review: configured policy vs whether it actually fired here
+        crp = e.get("configured_human_review_policy")
+        triggered = e.get("human_review_triggered")
+        review_tier = e.get("human_review_tier")
+        if crp or review_tier or triggered is not None:
+            parts = []
+            if crp:
+                parts.append(f"configured policy = {_REVIEW_TIER_LABELS.get(crp, crp)}")
+            if review_tier:
+                parts.append(f"tier for this event = {_REVIEW_TIER_LABELS.get(review_tier, review_tier)}")
+            parts.append("review triggered for this event = "
+                         + ("yes" if triggered else "no"))
+            s += " Human review: " + "; ".join(parts) + "."
+
+        # response decision (now a structured object)
+        rd = e.get("response_decision")
+        if isinstance(rd, dict) and rd:
+            rparts = []
+            if rd.get("strategy"):
+                rparts.append(f"strategy: {rd['strategy'].rstrip('.')}")
+            if rd.get("included"):
+                rparts.append(f"included: {_join(rd['included']) if isinstance(rd['included'], list) else rd['included']}")
+            if rd.get("avoided"):
+                rparts.append(f"avoided: {_join(rd['avoided']) if isinstance(rd['avoided'], list) else rd['avoided']}")
+            if rd.get("identifier_request"):
+                rparts.append(f"identifier request: {rd['identifier_request']}")
+            if rd.get("response_hash"):
+                rparts.append(f"response hash: {str(rd['response_hash'])[:12]}")
+            if rparts:
+                s += " Response decision — " + "; ".join(rparts) + "."
+        elif isinstance(rd, str) and rd:
+            s += f" Response decision: {rd.rstrip('.')}."
+
+        # explicit retention fields
+        rbits = []
+        if e.get("retention_tier"):
+            rbits.append(f"tier {e['retention_tier']}")
+        if e.get("deletion_or_review_date"):
+            rbits.append(f"deletion/review date {e['deletion_or_review_date']}")
+        if rbits:
+            s += " Retention: " + ", ".join(rbits) + "."
+        if e.get("privacy_decision_reason"):
+            s += f" Privacy decision reason: {e['privacy_decision_reason'].rstrip('.')}."
+        if e.get("content_hash"):
+            s += (f" Content hash (no full chat stored): {str(e['content_hash'])[:12]}.")
 
         priv_sentence = _privacy_sentence(e)
         if priv_sentence:
@@ -927,11 +1224,17 @@ def render_narrative(root: str) -> str:
         checks = e.get("source_policy_checks")
         if checks:
             s += " " + _policy_check_sentence(checks)
+            # mandatory-safeguard blocking note
+            blocking = [cid for cid, st in checks.items()
+                        if _POLICY_REGISTRY.get(_POLICY_ID_ALIASES.get(cid, cid), {}).get("mandatory")
+                        and st in ("fail", "unknown")]
+            if blocking:
+                s += (f" **Mandatory safeguard(s) {', '.join(blocking)} are "
+                      "FAIL/UNKNOWN — this blocks deployment or requires "
+                      "correction before proceeding.**")
 
-        # expanded detail level (S5+, S6/S7, or disclosure/override/incident):
-        # add the S3+/S4+/S6+ tiered-transparency sentences. 'summary' level
-        # (S3-S4) stops here, matching the policy's "1-2 short paragraphs"
-        # budget for case summaries.
+        # expanded detail level (S3+, or disclosure/override/incident/rejected):
+        # add the S3+/S4+/S6+ tiered-transparency sentences.
         if level == "expanded":
             s += _s3_sentence(e)
             s += _s4_sentence(e)
@@ -943,6 +1246,7 @@ def render_narrative(root: str) -> str:
         L.append(s)
         L.append("")
     return "\n".join(L)
+
 def _cli(argv: list[str]) -> int:
     root = os.environ.get("COMPLIANCE_ROOT", os.getcwd())
     cmd = argv[1] if len(argv) > 1 else "verify"

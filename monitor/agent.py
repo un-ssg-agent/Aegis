@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import hashlib
 
 import core          # noqa: E402  (audit hash chain)
 import llm_client    # noqa: E402  (providers; falls back to whatever key is set)
@@ -136,8 +137,19 @@ def generate(prompt: str, choices: dict | None = None, session: str = "web") -> 
             not_retained_data=["full conversation", "private user data"],
             external_disclosure="none",
             disclosure_reason="design-time governance decision; no individual is at risk",
-            response_decision="n/a — developer-facing governance gate, not a child-facing response",
+            response_decision={
+                "strategy": "developer-facing governance gate, not a child-facing response",
+                "included": ["surfaced safeguarding options", "logged the chosen configuration"],
+                "avoided": ["any child-directed output"],
+                "identifier_request": "none",
+            },
             human_review_tier="none",
+            # configured policy vs whether review actually fired on this design step
+            configured_human_review_policy=str(audit.get("configured_review_policy", "later")),
+            human_review_triggered=False,
+            # governance choice status — a flagged/blocked config is surfaced, not
+            # silently treated as accepted.
+            choice_status=str(audit.get("choice_status", "approved")),
         )
         data["audit_seq"] = rec["seq"]
         data["audit_hash"] = rec["hash"]
@@ -470,12 +482,47 @@ def child_chat(message: str, session: str = "web-child") -> dict:
         human_authorization_status = "pending" if esc_i >= 6 else "not_applicable"
         post_incident_review_deadline = "7 days post-resolution" if esc_i >= 6 else ""
 
+        # dynamic operating mode: direct child support vs direct adult support vs
+        # proxy concern (adult reporting about a specific child).
+        if age_status == "child_affected" or requester_role in (
+                "parent_or_caregiver", "teacher_or_educator", "worried_friend"):
+            op_mode = "proxy_concern"
+        elif age_status == "known_adult":
+            op_mode = "direct_adult_support"
+        else:
+            op_mode = "direct_child_support"
+
+        # structured response decision (replaces the old bare string)
+        response_decision_struct = {
+            "strategy": response_decision,
+            "included": ["calm support"] + (["one minimal safety question"] if esc_i >= 4 else []),
+            "avoided": ["name", "school", "exact location", "contact details",
+                        "private images", "revealing scores or S-levels"],
+            "identifier_request": "none",
+            "response_hash": hashlib.sha256(
+                (result["reply"] or "").encode("utf-8")).hexdigest(),
+        }
+
+        # retention tier + deletion/review date derived from privacy tier and the
+        # child-aware caps already computed above.
+        retention_tier = privacy_tier
+        deletion_or_review_date = retention_deadline
+        privacy_decision_reason = (
+            "stored structured indicators and a redacted summary only; no full "
+            "message text or identifiers, scaled to escalation severity and "
+            + ("heightened child data-minimization"
+               if child_protected else "baseline minimization")
+        )
+
+        # content hash stands in for the message so the full chat is never stored
+        content_hash = hashlib.sha256((message or "").encode("utf-8")).hexdigest()
+
         rec = core.append_decision(
             ROOT, "child-safety",
             f"chat conv_{session.replace('-', '_')} risk_level={_risk_level(esc_i)} overall={overall}",
             [result["primary_concern"]] + list(result["secondary_concerns"]),
-            "per-measure safeguarding assessment of a child-facing conversation",
-            f"ESCALATED to human review — primary: {result['primary_concern']} ({esc})",
+            "per-message safeguarding assessment of a child-facing conversation",
+            f"ESCALATED to authorized human reviewer — primary: {result['primary_concern']} ({esc})",
             rationale="; ".join(f"{d} {norm[d]['score']}: {norm[d]['reason']}" for d in _DOMAINS if norm[d]["score"] >= 4)
                       or f"primary {result['primary_concern']}",
             test_results=json.dumps({"by_measure": by_measure}),
@@ -483,7 +530,7 @@ def child_chat(message: str, session: str = "web-child") -> dict:
             model=provider, session=session,
             requester_role=requester_role,
             affected_person_role=affected_person_role,
-            operating_mode="direct_support",
+            operating_mode=op_mode,
             live_case=True,
             protection_mode=protection_mode,
             age_status=age_status,
@@ -493,8 +540,22 @@ def child_chat(message: str, session: str = "web-child") -> dict:
             not_retained_data=not_retained,
             external_disclosure=external_disclosure,
             disclosure_reason=disclosure_reason,
-            response_decision=response_decision,
+            response_decision=response_decision_struct,
             human_review_tier=review_tier,
+            # split review: the configured policy for this S-level vs the fact
+            # that review actually fired for this specific event.
+            configured_human_review_policy=review_tier,
+            human_review_triggered=True,
+            # a live escalation is an accepted safeguarding action, not a config
+            choice_status="approved",
+            # case grouping by session so repeated/escalating messages cluster
+            case_id=f"case_{session.replace('-', '_')}",
+            content_hash=content_hash,
+            redacted_summary=f"{result['primary_concern']} concern at {esc}; "
+                             f"see scores and redacted excerpts for review",
+            retention_tier=retention_tier,
+            deletion_or_review_date=deletion_or_review_date,
+            privacy_decision_reason=privacy_decision_reason,
             # --- S3+ tiered transparency ---
             review_trigger_reason=review_trigger_reason,
             retention_decision_reason=retention_decision_reason,
