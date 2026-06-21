@@ -128,7 +128,7 @@ class GenerateIn(BaseModel):
 @app.get("/")
 def index():
     return {"service": "ssgcheck-monitor", "ui": "run monitor-web (Next.js) on :3000",
-            "endpoints": ["/api/generate", "/api/audit", "/assess", "/api/alarms", "/api/ack"]}
+            "endpoints": ["/api/generate", "/api/narrative", "/api/audit", "/assess", "/api/alarms", "/api/ack"]}
 
 
 @app.post("/api/generate")
@@ -148,6 +148,15 @@ def assess_endpoint(body: AssessIn):
     if body.kind not in MEASURES:
         return JSONResponse({"error": "kind must be 'code' or 'conversation'"}, 400)
     return assess(body.kind, body.content)
+
+
+@app.get("/api/narrative")
+def api_narrative():
+    """The audit trail rendered as a plain-English reasoning log — the same prose
+    as audit-trail/narrative.md, generated deterministically from the chain (no
+    model in the loop), anchored to the verified head hash."""
+    ok, msg, n, head = core.verify_chain(ROOT)
+    return {"markdown": core.render_narrative(ROOT), "chain_ok": ok, "count": n, "head": head}
 
 
 @app.get("/api/audit")

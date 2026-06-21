@@ -19,12 +19,7 @@ type Item =
   | { role: "gate"; gate: Gate; prompt: string; chosen: Record<string, string>; done: boolean }
   | { role: "code"; code: Code };
 
-type AuditEntry = {
-  seq: number; ts?: string; domain: string; trigger?: string;
-  user_choice?: string; ai_act_ref?: string; rationale?: string;
-  options_presented?: string[]; model?: string; hash: string; prev_hash?: string;
-};
-type AuditChain = { entries: AuditEntry[]; chain_ok: boolean; count: number; head?: string | null };
+type Narrative = { markdown: string; chain_ok: boolean; count: number; head?: string | null };
 
 const EXAMPLE =
   "build a child-safety classifier — the governance layer should detect child-specific risks, present safer implementation options, and require explicit choices on escalation, retention and evaluation";
@@ -155,6 +150,42 @@ async function callAgent(prompt: string, choices?: Record<string, string>) {
   return j as Gate | Code;
 }
 
+/* ───────── tiny markdown renderer for the narrative (no deps) ───────── */
+const SEAL_RE = /\s*_\(sealed in the chain under `([0-9a-fA-F]+)`\)_\s*$/;
+
+function renderInline(text: string): React.ReactNode[] {
+  const nodes: React.ReactNode[] = [];
+  const re = /(\*\*[^*]+\*\*|`[^`]+`)/g;
+  let last = 0;
+  let m: RegExpExecArray | null;
+  let k = 0;
+  while ((m = re.exec(text))) {
+    if (m.index > last) nodes.push(text.slice(last, m.index));
+    const tok = m[0];
+    if (tok.startsWith("**")) nodes.push(<b key={k++}>{tok.slice(2, -2)}</b>);
+    else nodes.push(<code key={k++} className="ic">{tok.slice(1, -1)}</code>);
+    last = m.index + tok.length;
+  }
+  if (last < text.length) nodes.push(text.slice(last));
+  return nodes;
+}
+
+// split markdown into paragraph blocks, dropping the H1; each block may carry a trailing seal hash
+function parseNarrative(md: string): { body: string; seal?: string; intro?: boolean }[] {
+  return md
+    .split(/\n\s*\n/)
+    .map((b) => b.trim())
+    .filter((b) => b && !b.startsWith("# "))
+    .map((b, i) => {
+      const m = b.match(SEAL_RE);
+      return {
+        body: m ? b.slice(0, m.index).trim() : b,
+        seal: m ? m[1] : undefined,
+        intro: i === 0,
+      };
+    });
+}
+
 /* ───────── component ───────── */
 export default function Page() {
   const [items, setItems] = useState<Item[]>([]);
@@ -162,7 +193,7 @@ export default function Page() {
   const [busy, setBusy] = useState(false);
   const [dev, setDev] = useState(true);
   const [auditOpen, setAuditOpen] = useState(false);
-  const [auditData, setAuditData] = useState<AuditChain | null>(null);
+  const [narr, setNarr] = useState<Narrative | null>(null);
   const [auditLoading, setAuditLoading] = useState(false);
   const [auditErr, setAuditErr] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -171,26 +202,27 @@ export default function Page() {
     scrollRef.current?.scrollTo({ top: 1e9, behavior: "smooth" });
   }, [items, busy]);
 
-  function mockChainFromSession(): AuditChain {
+  function mockNarrative(): Narrative {
     const coded = items.filter((i) => i.role === "code" && i.code.audit_hash) as Extract<Item, { role: "code" }>[];
-    let prev = "GENESIS";
-    const entries: AuditEntry[] = coded.map((it) => {
+    const L: string[] = ["# Compliance audit trail — reasoning log", ""];
+    L.push(
+      `The hash chain is currently **intact and verified**, covering ${coded.length} recorded decision(s). ` +
+      "The prose is generated deterministically from the decision log with no model in the loop, so every sentence traces back to a sealed record."
+    );
+    L.push("");
+    coded.forEach((it, i) => {
       const c = it.code;
-      const e: AuditEntry = {
-        seq: c.audit_seq ?? 0,
-        ts: new Date().toISOString(),
-        domain: "child-safety",
-        trigger: "child-directed coding request",
-        user_choice: "developer choice recorded",
-        ai_act_ref: "UN CRC arts 3,12,16,19,34; EU AI Act",
-        model: c.provider || "mock",
-        hash: c.audit_hash!,
-        prev_hash: prev,
-      };
-      prev = c.audit_hash!;
-      return e;
+      L.push(
+        `On this session, a design decision came up — a child-directed build request (entry #${c.audit_seq ?? i}). ` +
+        "Rather than pick a default silently — these are safeguarding tradeoffs, not neutral technical knobs — I surfaced the escalation, retention and evaluation options. " +
+        "The developer made an explicit choice on each before any code was written. " +
+        "Legal anchor: UN CRC arts 3, 12, 16, 19, 34; EU AI Act (rights-sensitive). " +
+        `_(sealed in the chain under \`${c.audit_hash}\`)_`
+      );
+      L.push("");
     });
-    return { entries, chain_ok: true, count: entries.length, head: entries.length ? entries[entries.length - 1].hash : null };
+    if (!coded.length) L.push("_No decisions have been recorded yet._");
+    return { markdown: L.join("\n"), chain_ok: true, count: coded.length, head: coded.length ? coded[coded.length - 1].code.audit_hash! : null };
   }
 
   async function openAudit() {
@@ -198,12 +230,12 @@ export default function Page() {
     setAuditLoading(true);
     setAuditErr(false);
     try {
-      const r = await fetch("/api/audit");
+      const r = await fetch("/api/narrative");
       if (!r.ok) throw new Error();
-      setAuditData(await r.json());
+      setNarr(await r.json());
     } catch {
       setAuditErr(true);
-      setAuditData(mockChainFromSession());
+      setNarr(mockNarrative());
     } finally {
       setAuditLoading(false);
     }
@@ -530,41 +562,29 @@ export default function Page() {
               <div className="aload">loading chain…</div>
             ) : (
               <>
-                <div className={`verify ${auditData?.chain_ok ? "ok" : "bad"}`}>
-                  <span className="vmk">{auditData?.chain_ok ? "✓" : "✕"}</span>
+                <div className={`verify ${narr?.chain_ok ? "ok" : "bad"}`}>
+                  <span className="vmk">{narr?.chain_ok ? "✓" : "✕"}</span>
                   <span>
-                    {auditData?.chain_ok
-                      ? `Chain intact · ${auditData?.count ?? 0} ${(auditData?.count ?? 0) === 1 ? "entry" : "entries"}`
+                    {narr?.chain_ok
+                      ? `Chain intact · ${narr?.count ?? 0} ${(narr?.count ?? 0) === 1 ? "entry" : "entries"}`
                       : "Chain verification FAILED"}
                   </span>
                   {auditErr && <span className="demo">demo data · backend unreachable</span>}
                 </div>
-                {auditData?.head && (
-                  <div className="headrow"><span className="muted">head</span> <code>{auditData.head.slice(0, 28)}…</code></div>
+                {narr?.head && (
+                  <div className="headrow"><span className="muted">head</span> <code>{narr.head.slice(0, 28)}…</code></div>
                 )}
 
                 <div className="trail">
-                  {(auditData?.entries ?? []).slice().reverse().map((e) => (
-                    <div key={e.seq} className="entry">
-                      <div className="ehd">
-                        <span className="eseq">#{e.seq}</span>
-                        <span className="edom">{e.domain}</span>
-                        {e.ts && <span className="ets">{new Date(e.ts).toLocaleString()}</span>}
-                      </div>
-                      {e.trigger && <div className="erow"><span className="ek">trigger</span><span className="ev">{e.trigger}</span></div>}
-                      {!!(e.options_presented && e.options_presented.length) && (
-                        <div className="erow"><span className="ek">options</span><span className="ev">{e.options_presented.join("  ·  ")}</span></div>
-                      )}
-                      {e.user_choice && <div className="erow"><span className="ek">choice</span><span className="ev hi">{e.user_choice}</span></div>}
-                      {e.ai_act_ref && <div className="erow"><span className="ek">source</span><span className="ev">{e.ai_act_ref}</span></div>}
-                      {e.model && <div className="erow"><span className="ek">model</span><span className="ev">{e.model}</span></div>}
-                      <div className="ehash"><span className="muted">sha-256</span> <code>{e.hash}</code></div>
-                      {e.prev_hash && (
-                        <div className="eprev"><span className="muted">prev</span> <code>{e.prev_hash === "GENESIS" ? "GENESIS" : e.prev_hash.slice(0, 24) + "…"}</code></div>
+                  {narr && parseNarrative(narr.markdown).map((p, i) => (
+                    <div key={i} className={`npara ${p.intro ? "intro" : ""}`}>
+                      <p>{renderInline(p.body)}</p>
+                      {p.seal && (
+                        <div className="nseal">sealed in the chain under <code>{p.seal}</code></div>
                       )}
                     </div>
                   ))}
-                  {(!auditData?.entries || auditData.entries.length === 0) && (
+                  {narr && parseNarrative(narr.markdown).length === 0 && (
                     <div className="aempty">No decisions logged yet. Run a child-directed build to create the first entry.</div>
                   )}
                 </div>
@@ -714,6 +734,14 @@ const CSS = `
 .headrow{margin:10px 20px 0;font-size:12px;color:#7f8694;}
 .headrow code{font-family:ui-monospace,Menlo,monospace;color:#9aa0ad;}
 .trail{overflow-y:auto;padding:14px 20px 20px;display:flex;flex-direction:column;gap:11px;}
+.npara{border-bottom:1px solid #1d212b;padding-bottom:12px;}
+.npara:last-child{border-bottom:none;}
+.npara p{margin:0;line-height:1.7;color:#c8cdd6;font-size:13.5px;}
+.npara.intro p{color:#9aa0ad;font-size:12.5px;}
+.npara b{color:#fff;font-weight:650;}
+.npara .ic{font-family:ui-monospace,Menlo,monospace;font-size:11px;background:#0e1622;border:1px solid #1c2433;border-radius:4px;padding:1px 5px;color:#9aa0ad;word-break:break-all;}
+.nseal{margin-top:7px;font-size:11px;color:#6f7682;font-style:italic;}
+.nseal code{font-family:ui-monospace,Menlo,monospace;font-style:normal;color:#7fd99a;word-break:break-all;background:#0e1622;border:1px solid #173024;border-radius:4px;padding:1px 5px;}
 .entry{border:1px solid #232833;border-radius:11px;padding:13px;background:#161a22;}
 .ehd{display:flex;align-items:center;gap:9px;margin-bottom:9px;}
 .eseq{font-weight:700;color:#fff;font-size:13px;}
