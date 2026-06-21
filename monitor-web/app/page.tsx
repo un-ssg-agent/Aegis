@@ -195,7 +195,7 @@ type Assessment = {
   primary_concern: string; secondary_concerns: string[]; human_review: boolean;
   provider?: string; audit_seq?: number; audit_hash?: string;
 };
-type Turn = { role: "child" | "bot"; text: string };
+type Turn = { role: "child" | "bot"; text: string; assessment?: Assessment | null };
 
 const AXES: { key: keyof Assessment["assessment"]; label: string }[] = [
   { key: "bullying", label: "Bullying" },
@@ -204,6 +204,123 @@ const AXES: { key: keyof Assessment["assessment"]; label: string }[] = [
   { key: "self_harm", label: "Self-harm" },
   { key: "distress", label: "Distress" },
 ];
+
+// --- Risk visualization (per-message category labels + distribution sidebar) ---
+// Re-targeted at the existing 5-axis Assessment shape already returned by
+// /api/chat — no new backend call needed, since agent.py already scores every
+// turn on bullying/grooming/abuse/self_harm/distress. A fixed color per
+// category is used for the chip, the legend dot, and the stacked bar; fill
+// length/score encodes severity separately so color never doubles as a score.
+const CAT_VISUAL: Record<string, { hex: string }> = {
+  bullying:  { hex: "#f97316" },
+  grooming:  { hex: "#a855f7" },
+  abuse:     { hex: "#dc2626" },
+  self_harm: { hex: "#be123c" },
+  distress:  { hex: "#06b6d4" },
+};
+const CAT_LABEL: Record<string, string> = {
+  bullying: "bullying", grooming: "grooming", abuse: "abuse",
+  self_harm: "self harm", distress: "distress",
+};
+const CHIP_FLOOR = 2; // below this (on the 0-9 scale) a message carries no salient label
+
+// Dominant category + per-category score for one assessment (one chat turn).
+function dominantAxis(a: Assessment | null | undefined): { key: string; score: number } | null {
+  if (!a) return null;
+  let best: { key: string; score: number } | null = null;
+  for (const { key } of AXES) {
+    const score = a.assessment[key]?.score ?? 0;
+    if (!best || score > best.score) best = { key, score };
+  }
+  return best && best.score >= CHIP_FLOOR ? best : null;
+}
+
+// Per-message label chip shown under a bot reply's bubble (the category that
+// drove that turn's assessment, if any score cleared the floor).
+function CatChip({ axisKey, score }: { axisKey: string; score: number }) {
+  return (
+    <span
+      className="catchip"
+      style={{ backgroundColor: CAT_VISUAL[axisKey]?.hex ?? "#64748b" }}
+    >
+      {CAT_LABEL[axisKey] ?? axisKey} · {score}/9
+    </span>
+  );
+}
+
+// 100%-stacked bar: each category's share of total risk across the whole
+// conversation so far (sum of per-turn scores), severity-weighted.
+function StackedDist({ totals }: { totals: Record<string, number> }) {
+  const sum = AXES.reduce((s, { key }) => s + (totals[key] || 0), 0) || 1;
+  const segs = AXES.filter(({ key }) => (totals[key] || 0) > 0);
+  if (segs.length === 0) return <div className="diststack diststack-empty" />;
+  return (
+    <div className="diststack">
+      {segs.map(({ key }) => (
+        <div
+          key={key}
+          title={`${CAT_LABEL[key]} · ${Math.round(((totals[key] || 0) / sum) * 100)}%`}
+          style={{ width: `${((totals[key] || 0) / sum) * 100}%`, backgroundColor: CAT_VISUAL[key]?.hex }}
+        />
+      ))}
+    </div>
+  );
+}
+
+// Distribution card: stacked share bar + the dominant category called out,
+// then per-category bars sorted high→low with a per-category message count.
+function DistCard({ turns }: { turns: Turn[] }) {
+  const totals: Record<string, number> = {};
+  const counts: Record<string, number> = {};
+  for (const t of turns) {
+    const d = dominantAxis(t.assessment);
+    if (d) counts[d.key] = (counts[d.key] || 0) + 1;
+    if (t.assessment) {
+      for (const { key } of AXES) {
+        const s = t.assessment.assessment[key]?.score ?? 0;
+        totals[key] = Math.max(totals[key] || 0, s); // worst-seen, like by_measure
+      }
+    }
+  }
+  const ranked = AXES.map(({ key, label }) => ({
+    key, label, score: totals[key] || 0, count: counts[key] || 0,
+  })).sort((a, b) => b.score - a.score);
+  const dominant = ranked[0]?.score > 0 ? ranked[0].key : null;
+  const hasAny = ranked.some((r) => r.score > 0);
+
+  return (
+    <div className="card">
+      <div className="cnum"><span className="n">2.5</span> RISK DISTRIBUTION</div>
+      {hasAny ? (
+        <>
+          <StackedDist totals={totals} />
+          <div className="distmeta">
+            <span>worst score per category</span>
+            {dominant && (
+              <span className="distdom">
+                dominant
+                <span className="distdompill" style={{ backgroundColor: CAT_VISUAL[dominant]?.hex }}>
+                  {CAT_LABEL[dominant]}
+                </span>
+              </span>
+            )}
+          </div>
+          {ranked.map((r, i) => (
+            <div key={r.key} className="axis">
+              <div className="axhd">
+                <span className="distdot" style={{ backgroundColor: CAT_VISUAL[r.key]?.hex ?? "#64748b" }} />
+                <span className={`axname ${i === 0 && r.score > 0 ? "axname-dom" : ""}`}>{r.label}</span>
+                <span className="axscore" style={{ color: scoreColor(r.score) }}>{r.score}<span className="ax9">/9</span></span>
+                <span className="distcount" title="messages where this was the dominant category">·{r.count}</span>
+              </div>
+              <div className="axbar"><span style={{ width: `${(r.score / 9) * 100}%`, background: scoreColor(r.score) }} /></div>
+            </div>
+          ))}
+        </>
+      ) : <div className="muted small">no scores yet</div>}
+    </div>
+  );
+}
 
 const SAMPLES: { cat: string; text: string }[] = [
   { cat: "harmless", text: "what's a cool fact about space?" },
@@ -321,11 +438,11 @@ function ChildChat({
       const j = await r.json();
       if (j?.error) throw new Error(j.error);
       setLast(j);
-      setTurns((x) => [...x, { role: "bot", text: j.reply }]);
+      setTurns((x) => [...x, { role: "bot", text: j.reply, assessment: j }]);
     } catch {
       const j = mockChat(m);
       setLast(j);
-      setTurns((x) => [...x, { role: "bot", text: j.reply }]);
+      setTurns((x) => [...x, { role: "bot", text: j.reply, assessment: j }]);
     } finally {
       setBusy(false);
     }
@@ -360,6 +477,11 @@ function ChildChat({
               {t.role === "child" ? "CHILD" : "ASSISTANT"}
             </div>
             <div className={`bubble ${t.role === "child" ? "u" : "a"}`}>{t.text}</div>
+            {t.role === "bot" && dominantAxis(t.assessment) && (
+              <div className="chiprow">
+                <CatChip axisKey={dominantAxis(t.assessment)!.key} score={dominantAxis(t.assessment)!.score} />
+              </div>
+            )}
           </div>
         ))}
         {busy && (
@@ -432,6 +554,8 @@ function ChildChat({
             );
           }) : <div className="muted small">no scores yet</div>}
         </div>
+
+        <DistCard turns={turns} />
 
         <div className="card audcard" onClick={onOpenAudit} role="button" tabIndex={0}
           onKeyDown={(e) => { if (e.key === "Enter") onOpenAudit(); }}>
@@ -1100,11 +1224,21 @@ const CSS = `
 .escpill.hi{background:#2a1414;color:#ff8a82;}
 .escmeaning{font-size:12.5px;color:#aeb4c0;}
 .axis{margin-bottom:13px;}
-.axhd{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:5px;}
+.axhd{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:5px;gap:6px;}
 .axname{font-size:13px;color:#e9ecf1;font-weight:550;}
-.axscore{font-size:15px;font-weight:800;}
+.axname-dom{color:#fff;font-weight:700;}
+.axscore{font-size:15px;font-weight:800;margin-left:auto;}
 .ax9{font-size:10px;color:#6f7682;font-weight:600;}
 .axbar{height:6px;border-radius:4px;background:#222732;overflow:hidden;margin-bottom:5px;}
 .axbar span{display:block;height:100%;border-radius:4px;transition:width .4s;}
 .axreason{font-size:11.5px;color:#9aa0ad;line-height:1.45;}
+.catchip{display:inline-flex;align-items:center;gap:4px;border-radius:999px;padding:2px 8px;font-size:10px;font-weight:600;color:#fff;}
+.chiprow{display:flex;justify-content:flex-end;margin-top:4px;}
+.diststack{display:flex;height:8px;width:100%;overflow:hidden;border-radius:5px;margin-bottom:8px;}
+.diststack-empty{height:8px;width:100%;border-radius:5px;background:#222732;margin-bottom:8px;}
+.distmeta{display:flex;align-items:center;justify-content:space-between;font-size:10px;color:#7d8390;margin-bottom:10px;}
+.distdom{display:flex;align-items:center;gap:5px;}
+.distdompill{border-radius:5px;padding:1px 7px;font-size:10px;font-weight:700;color:#fff;}
+.distdot{width:7px;height:7px;border-radius:999px;flex-shrink:0;}
+.distcount{font-size:10.5px;color:#6f7682;width:22px;text-align:right;font-variant-numeric:tabular-nums;}
 `;

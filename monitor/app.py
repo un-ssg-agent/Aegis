@@ -29,6 +29,7 @@ import json
 import os
 import re
 import sys
+from collections import Counter
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -45,8 +46,17 @@ THRESHOLD = float(os.environ.get("ALARM_THRESHOLD", "0.6"))
 
 MEASURES = {
     "code": ["fairness", "privacy", "security"],
-    "conversation": ["grooming", "self_harm", "pii_exposure", "distress"],
+    "conversation": ["grooming", "bullying", "suicidal_ideation",
+                     "self_harm", "pii_exposure", "distress"],
 }
+# Human-readable category labels for the UI distribution view.
+CATEGORY_LABELS = {
+    "fairness": "fairness", "privacy": "privacy", "security": "security",
+    "grooming": "grooming", "bullying": "bullying",
+    "suicidal_ideation": "suicidal ideation", "self_harm": "self harm",
+    "pii_exposure": "PII exposure", "distress": "distress",
+}
+LABEL_FLOOR = 0.15  # below this a message carries no salient risk label
 AI_ACT = {
     "code": "EU AI Act high-risk (Annex III) / UNESCO AI ethics",
     "conversation": "UN CRC arts 3,12,16,19,34; EU AI Act (rights-sensitive)",
@@ -76,6 +86,44 @@ def score_one(provider: str, kind: str, content: str) -> dict:
             "overall": round(overall, 3), "reason": data.get("reason", "")}
 
 
+def _label_messages(kind: str, content: str, provider: str) -> list[dict]:
+    """Label each line with its dominant risk category, using ONE model.
+
+    The 3-model panel scores the whole context for escalation; this gives every
+    individual message a category so the UI can tag bubbles and build the
+    per-message distribution. One provider keeps the extra call count modest.
+    """
+    out = []
+    for line in content.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        who, sep, text = line.partition(":")
+        text, who = (text.strip(), who.strip()) if sep else (line, "?")
+        try:
+            scores = score_one(provider, kind, text)["scores"]
+            label = max(scores, key=scores.get) if scores else "none"
+            top = round(scores.get(label, 0.0), 3)
+            if top < LABEL_FLOOR:
+                label = "none"
+        except Exception:
+            label, top = "none", 0.0
+        out.append({"who": who, "text": text, "label": label, "score": top})
+    return out
+
+
+def _distribution(kind: str, by_measure: dict, msgs: list[dict]) -> list[dict]:
+    """Per-category distribution: severity score + share + message count, hi→lo."""
+    counts = Counter(m["label"] for m in msgs)
+    total = sum(by_measure.values()) or 1.0
+    dist = [{"key": k, "label": CATEGORY_LABELS.get(k, k),
+             "score": by_measure.get(k, 0.0),
+             "share": round(by_measure.get(k, 0.0) / total, 3),
+             "count": counts.get(k, 0)} for k in MEASURES[kind]]
+    dist.sort(key=lambda d: d["score"], reverse=True)
+    return dist
+
+
 def assess(kind: str, content: str) -> dict:
     panel, errors = [], []
     for name in llm_client.provider_names():
@@ -87,9 +135,15 @@ def assess(kind: str, content: str) -> dict:
     by_measure = {m: round(max((p["scores"].get(m, 0.0) for p in panel), default=0.0), 3)
                   for m in MEASURES[kind]}
     alarm = bool(panel) and agg >= THRESHOLD
+    providers = llm_client.provider_names()
+    msgs = (_label_messages(kind, content, providers[0])
+            if kind == "conversation" and providers else [])
+    distribution = _distribution(kind, by_measure, msgs)
+    dominant = distribution[0]["key"] if distribution and distribution[0]["score"] > 0 else None
     result = {"kind": kind, "n_models": len(panel), "panel": panel,
               "by_measure": by_measure, "aggregate": agg,
-              "threshold": THRESHOLD, "alarm": alarm, "errors": errors}
+              "threshold": THRESHOLD, "alarm": alarm, "errors": errors,
+              "messages": msgs, "distribution": distribution, "dominant": dominant}
     if alarm:
         rec = core.append_decision(
             ROOT, kind,
