@@ -1,0 +1,42 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>System Architecture</title>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <style>
+    html, body { margin: 0; background: #0b1220; }
+    .wrap { display: inline-block; padding: 52px 48px 40px; }
+    h1 { color: #fff; font: 700 34px Arial, sans-serif; margin: 0 0 20px 4px; }
+    .mermaid { font-family: Arial, sans-serif; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>System Architecture</h1>
+    <pre class="mermaid">
+flowchart TB
+  A["developer request"]:::base --> B
+  B["&lt;b&gt;Coding agent&lt;/b&gt; (OpenCode / any MCP host) + &lt;b&gt;AGENTS.md&lt;/b&gt; — the gate&lt;br/&gt;&lt;i&gt;1 · sensitive signal? (intent / filename / schema keywords)&lt;/i&gt;"]:::base --> C
+  C["&lt;b&gt;GATE&lt;/b&gt; (prompt-enforced): don't code yet · present ≥2 options + tradeoffs ·&lt;br/&gt;cite EU AI Act ref verbatim · WAIT for human&lt;br/&gt;&lt;i&gt;2 · human chooses&lt;/i&gt;"]:::base --> D
+  D["&lt;b&gt;MCP tool&amp;nbsp; log_decision(…)&lt;/b&gt; &amp;nbsp;→&amp;nbsp; compliance-auditor (deterministic Python)&lt;br/&gt;&lt;i&gt;3 · append-only&lt;/i&gt;"]:::mcp --> E
+  E["&lt;b&gt;audit-trail/decisions.jsonl&lt;/b&gt; — SHA-256 hash chain&lt;br/&gt;&lt;i&gt;seq N: { …, prev_hash, hash = sha256(canonical(record)) }&lt;/i&gt;"]:::base
+  E --> V["verify_audit_trail()&lt;br/&gt;&lt;i&gt;recompute every link, localize tamper&lt;/i&gt;"]:::out
+  E --> R["generate_compliance_report()&lt;br/&gt;&lt;i&gt;deterministic Model Card&lt;/i&gt;"]:::out
+  D --&gt;|use case| U["&lt;b&gt;Child-safety chatbot&lt;/b&gt;&lt;br/&gt;a use case of the above&lt;br/&gt;&lt;i&gt;grooming · bullying · abuse · self-harm · suicidal · distress&lt;/i&gt;"]:::usecase
+
+  classDef base fill:#1e293b,stroke:#334155,color:#e2e8f0;
+  classDef mcp fill:#1d4ed8,stroke:#3b82f6,color:#ffffff;
+  classDef usecase fill:#10233f,stroke:#2563eb,color:#e2e8f0;
+  classDef out fill:#0b1220,stroke:#10b981,color:#34d399;
+    </pre>
+  </div>
+  <script>
+    mermaid.initialize({
+      startOnLoad: true, theme: 'dark', securityLevel: 'loose',
+      flowchart: { htmlLabels: true, nodeSpacing: 45, rankSpacing: 48, curve: 'basis' },
+      themeVariables: { fontFamily: 'Arial, sans-serif', fontSize: '15px', lineColor: '#64748b' }
+    });
+  </script>
+</body>
+</html>

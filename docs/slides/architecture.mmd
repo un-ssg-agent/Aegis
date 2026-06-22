@@ -1,0 +1,14 @@
+flowchart TB
+  A["developer request"]:::base --> B
+  B["<b>Coding agent</b> (OpenCode / any MCP host) + <b>AGENTS.md</b> — the gate<br/><i>1 · sensitive signal? (intent / filename / schema keywords)</i>"]:::base --> C
+  C["<b>GATE</b> (prompt-enforced): don't code yet · present ≥2 options + tradeoffs ·<br/>cite EU AI Act ref verbatim · WAIT for human<br/><i>2 · human chooses</i>"]:::base --> D
+  D["<b>MCP tool&nbsp; log_decision(…)</b> &nbsp;→&nbsp; compliance-auditor (deterministic Python)<br/><i>3 · append-only</i>"]:::mcp --> E
+  E["<b>audit-trail/decisions.jsonl</b> — SHA-256 hash chain<br/><i>seq N: { …, prev_hash, hash = sha256(canonical(record)) }</i>"]:::base
+  E --> V["verify_audit_trail()<br/><i>recompute every link, localize tamper</i>"]:::out
+  E --> R["generate_compliance_report()<br/><i>deterministic Model Card</i>"]:::out
+  D -->|use case| U["<b>Child-safety chatbot</b><br/>a use case of the above<br/><i>grooming · bullying · abuse · self-harm · suicidal · distress</i>"]:::usecase
+
+  classDef base fill:#1e293b,stroke:#334155,color:#e2e8f0,rx:8,ry:8;
+  classDef mcp fill:#1d4ed8,stroke:#3b82f6,color:#ffffff,rx:8,ry:8;
+  classDef usecase fill:#10233f,stroke:#2563eb,color:#e2e8f0,rx:8,ry:8;
+  classDef out fill:#0b1220,stroke:#10b981,color:#34d399,rx:8,ry:8;
