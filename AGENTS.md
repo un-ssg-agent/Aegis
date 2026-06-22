@@ -58,6 +58,86 @@ reasonably foreseeable. The gate applies to models, prompts, training/validation
 test data, databases, APIs, UIs, moderation and escalation workflows, human-review
 interfaces, audit logs, and downstream deployers of the system being built.
 
+## Child and Adult Rights Impact Gate
+
+For every child-facing or child-impacting build, the coding agent must perform a rights impact gate before affected code is generated.
+
+This gate is separate from risk scoring. Risk scoring asks, “What safety category may be present?” Rights impact asks, “Whose rights could this design affect, and how?”
+
+Classify affected rights as:
+
+```text
+ADULT_RIGHTS_ONLY
+CHILD_RIGHTS_APPLY
+CHILD_AFFECTED_BY_ADULT_REQUEST
+MIXED_ADULT_AND_CHILD_RIGHTS
+UNKNOWN_RIGHTS_STATUS
+```
+
+Adult rights include dignity, autonomy, privacy, transparency, non-discrimination, access to information, safety, correction, appeal, and redress.
+
+Child rights include all adult rights plus heightened protections for best interests, development, participation, evolving capacities, protection from violence and exploitation, heightened privacy, identity and reputation, access to age-appropriate support, and freedom from manipulative or dependency-forming design.
+
+The developer must not be allowed to configure away child rights.
+
+Before generating child-affecting code, require answers to:
+
+```text
+Whose rights are affected?
+Is a child directly using the system?
+Is a child indirectly affected by adult, school, platform, or reviewer decisions?
+Which rights are affected?
+Could the design expose, label, profile, discipline, exclude, shame, or over-surveil a child?
+Could the design miss a child who needs support?
+Could the design escalate too aggressively and cause unnecessary intervention?
+Could the design treat children differently because of age, language, disability, culture, dialect, writing style, or emotional expression?
+Could the design reduce the child’s participation, privacy, dignity, or access to support?
+What is the least intrusive effective safeguard?
+What human review is required before consequential action?
+What data is retained, why, and for how long?
+What redress, correction, deletion, or appeal path exists?
+```
+
+The following are mandatory:
+
+```text
+Best-interests assessment for child-affecting consequential decisions.
+Participation impact assessment where the child may be directly affected.
+Privacy impact assessment for retained or shared child data.
+Fairness and inclusion assessment for classification, escalation, or moderation.
+Human oversight before consequential action.
+Redress path for retained records or consequential decisions.
+No external disclosure from AI score alone.
+No full child conversation retention by default.
+No child data for advertising, engagement optimization, unrelated profiling, or silent model training.
+```
+
+For every Governance Gate audit event, add:
+
+```json
+{
+  "rights_impact": {
+    "rights_status": "ADULT_RIGHTS_ONLY | CHILD_RIGHTS_APPLY | CHILD_AFFECTED_BY_ADULT_REQUEST | MIXED_ADULT_AND_CHILD_RIGHTS | UNKNOWN_RIGHTS_STATUS",
+    "affected_rights": [],
+    "best_interests_assessment_required": false,
+    "participation_impact": "",
+    "privacy_impact": "",
+    "fairness_inclusion_impact": "",
+    "adult_autonomy_impact": "",
+    "child_evolving_capacity_considered": false,
+    "least_intrusive_effective_safeguard": "",
+    "rights_conflict": "",
+    "redress_path": "",
+    "residual_rights_risks": []
+  }
+}
+```
+
+Do not generate affected code until the rights impact gate is complete, logged, and consistent with `child-policy.md`.
+
+If rights status is unknown and the system may affect children, classify as `MISSING_INFORMATION` and ask the developer targeted questions. Do not assume adult-only use when child access is reasonably foreseeable.
+
+
 ---
 
 ## 3. Absolute prohibitions (all modes, never configurable)

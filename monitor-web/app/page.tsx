@@ -863,9 +863,9 @@ export default function Page() {
 
       <header className="top">
         <div className="brand">
-          <div className="logo">SG</div>
+          <div className="logo">AE</div>
           <div>
-            <div className="bname">ssgcheck</div>
+            <div className="bname">Aegis</div>
             <div className="bsub">{mode === "build" ? "coding agent" : mode === "chat" ? "child-safety chat" : "governing policy"}</div>
           </div>
         </div>
@@ -920,7 +920,7 @@ export default function Page() {
                 <div className="aempty">loading policy…</div>
               )}
             </div>
-            <div className="foot">Read-only · this is the default a custom policy overrides per request · governed by ssgcheck</div>
+            <div className="foot">Read-only · this is the default a custom policy overrides per request · governed by Aegis</div>
           </div>
         </div>
       ) : (
@@ -962,7 +962,7 @@ export default function Page() {
               const allChosen = g.decisions.every((d) => it.chosen[d.id]);
               return (
                 <div key={idx} className="row">
-                  <div className="who"><span className="av a">SG</span> SSGCHECK</div>
+                  <div className="who"><span className="av a">AE</span> AEGIS</div>
                   <div className="bubble a">
                     <div className="gatehd">
                       <span className="pill flag">GATE · child-directed</span>
@@ -1008,7 +1008,7 @@ export default function Page() {
             const c = it.code;
             return (
               <div key={idx} className="row">
-                <div className="who"><span className="av a">SG</span> SSGCHECK</div>
+                <div className="who"><span className="av a">AE</span> AEGIS</div>
                 <div className="bubble a">
                   <div className="cmsg">{c.message}</div>
                   <div className="codewrap">
@@ -1039,7 +1039,7 @@ export default function Page() {
 
           {busy && (
             <div className="row">
-              <div className="who"><span className="av a">SG</span> SSGCHECK</div>
+              <div className="who"><span className="av a">AE</span> AEGIS</div>
               <div className="bubble a thinking">
                 <span className="d" /><span className="d" /><span className="d" />
                 <span className="tlabel">{lastGate?.done ? "writing code under policy" : "scanning for child-directed signals"}</span>

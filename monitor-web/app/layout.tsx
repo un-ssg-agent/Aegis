@@ -2,7 +2,7 @@ import "./globals.css";
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "SSGCheck Monitor",
+  title: "Aegis Monitor",
   description: "3-model risk panel with threshold escalation to a human monitor",
 };
 

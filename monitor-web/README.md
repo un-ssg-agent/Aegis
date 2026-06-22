@@ -1,4 +1,4 @@
-# monitor-web — SSGCheck monitor UI (Next.js)
+# monitor-web — Aegis monitor UI (Next.js)
 
 A Next.js front-end for the 3-model risk panel, styled like the reference video:
 a light chat on the left, a dark "agent panel" on the right (pipeline checklist →
