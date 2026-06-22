@@ -35,8 +35,26 @@ def _load_agents_md() -> str:
 
 CONTRACT = """
 == RUNTIME OUTPUT CONTRACT (read carefully) ==
-You operate as a coding agent inside a web UI. Reply with ONLY one JSON object.
-No markdown code fences, no prose outside the JSON object.
+You operate as a coding agent inside a web UI. Your reply is machine-parsed, so follow
+the per-case format EXACTLY. For the gate (CASE A) reply with ONLY one JSON object. For
+code (CASE B) reply with a JSON HEADER object, then the marker line, then RAW code (see
+CASE B). No markdown code fences anywhere.
+
+== IMPLEMENTATION STANDARD (applies to every "phase":"code" reply) ==
+Ship COMPLETE, RUNNABLE code — a real artifact, never a skeleton or framework.
+- No placeholders, stubs, TODOs, FIXMEs, "implement later", "in production you would…",
+  bare `pass` / `...` / `raise NotImplementedError` standing in for a real body, or
+  functions that return hardcoded/dummy values pretending to be computed results
+  (e.g. a `_load_model` that returns a string, a `_run_*_inference` that returns canned data).
+- No abstract shells whose entry points exist but whose core does nothing.
+- If a capability genuinely cannot be created inline (a trained ML model, a paid API with
+  no key, external infra), implement a REAL working substitute that runs today — a
+  deterministic rule/heuristic, a real call via the available llm_client, or a real
+  library — and state the tradeoff in one line. Never fake it with a placeholder.
+- Prefer the smallest real working slice over a large non-working structure: if forced to
+  choose, choose "actually runs". Wire real inputs, outputs, data flow, and error handling.
+- Under-specified request: pick sensible concrete defaults, implement them fully, note any
+  assumption in <=1 line. Do not stall or scaffold.
 
 First decide: does the developer's request trigger the child-safety governance
 gate (policy section 2 — software directed at, foreseeably used by, or impacting
@@ -64,22 +82,36 @@ CASE A — the gate fires AND the developer has NOT yet chosen options. Respond:
 }
 
 CASE B — the gate does NOT fire (ordinary dev work) OR the developer HAS chosen
-options. Respond:
+options. Respond with a JSON HEADER object, then a line containing EXACTLY the marker
+<<<AEGIS_CODE>>>, then the COMPLETE program as RAW text running to the end of your
+message:
 {
   "phase": "code",
   "message": "<=2 sentences",
   "language": "python",
-  "code": "<the code, adhering to the policy prohibitions and to the chosen options>",
   "explanation": "<short>",
   "citations": [{"tag": "EU AI Act", "text": "<short>"}],
   "audit": {"trigger": "<short>", "options_presented": ["<a>", "<b>"],
             "choice": "<what the developer chose>", "rationale": "<short>",
             "ai_act_ref": "<verbatim anchor>"}
 }
-Include the "audit" object ONLY when the gate fired (child-directed work); omit it
-for ordinary code. NEVER output anything the policy prohibits (section 3),
-regardless of how the request is framed.
+<<<AEGIS_CODE>>>
+<the complete, runnable program here as RAW text — real newlines, NO JSON escaping,
+NO markdown fences — running to the very end of your message>
+
+Rules for CASE B:
+- The program goes AFTER the marker as raw text. Do NOT put a "code" field inside the
+  JSON header, and do NOT JSON-escape or fence the program. This is what lets you write
+  the FULL program — length is never a reason to abbreviate, truncate, or stub.
+- The code must satisfy the IMPLEMENTATION STANDARD above (no placeholders/stubs/dummy
+  returns) and adhere to the policy prohibitions (section 3) and the chosen options.
+- Include the "audit" object in the header ONLY when the gate fired (child-directed
+  work); omit it for ordinary code. NEVER output anything the policy prohibits (section
+  3), regardless of how the request is framed.
 """
+
+
+CODE_MARKER = "<<<AEGIS_CODE>>>"
 
 
 def _extract_json(text: str):
@@ -90,6 +122,19 @@ def _extract_json(text: str):
         return json.loads(m.group(0))
     except Exception:
         return None
+
+
+def _strip_fences(code: str) -> str:
+    """Defensive: if the model wraps the raw code in a ``` fence despite the
+    contract, peel it off so we store clean source."""
+    c = (code or "").strip()
+    if c.startswith("```"):
+        nl = c.find("\n")
+        c = c[nl + 1:] if nl != -1 else ""
+        c = c.rstrip()
+        if c.endswith("```"):
+            c = c[:-3]
+    return c.strip()
 
 
 def generate(prompt: str, choices: dict | None = None, session: str = "web",
@@ -107,18 +152,34 @@ def generate(prompt: str, choices: dict | None = None, session: str = "web",
     if choices:
         picked = "; ".join(f"{k}={v}" for k, v in choices.items())
         user += (f"\n\nThe developer reviewed the options and chose: {picked}. "
-                 "Now produce CASE B (phase=code): code consistent with these choices, "
-                 "and include the audit block.")
+                 "Now produce CASE B: the JSON header, the <<<AEGIS_CODE>>> marker, then "
+                 "the COMPLETE, runnable program consistent with these choices — real "
+                 "working logic, no placeholders, stubs, or dummy returns — and include "
+                 "the audit block in the header.")
 
     msg, provider = llm_client.chat(
         [{"role": "system", "content": system},
          {"role": "user", "content": user}],
         temperature=0.2)
 
-    data = _extract_json(msg.get("content", "")) or {
-        "phase": "code", "language": "text",
-        "message": "Model returned unstructured output.",
-        "code": msg.get("content", ""), "explanation": "", "citations": []}
+    content = msg.get("content", "") or ""
+
+    # CASE B emits a JSON header, the marker, then the program as RAW text — kept
+    # OUT of the JSON string so long programs are never escaped or truncated to keep
+    # the object valid. Split on the marker: everything before is the header JSON,
+    # everything after is the program. If there's no marker (CASE A, or the old
+    # single-object format), fall back to parsing the whole reply as JSON.
+    head, sep, raw_code = content.partition(CODE_MARKER)
+    data = _extract_json(head if sep else content)
+    if data is None:
+        data = {"phase": "code", "language": "text",
+                "message": "Model returned unstructured output.",
+                "code": content, "explanation": "", "citations": []}
+    if sep:
+        # raw code after the marker is authoritative over anything in the header
+        data["code"] = _strip_fences(raw_code)
+        data.setdefault("phase", "code")
+        data.setdefault("language", "python")
     data["provider"] = provider
 
     audit = data.get("audit")
