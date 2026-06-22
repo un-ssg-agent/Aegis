@@ -24,6 +24,15 @@ type Narrative = { markdown: string; chain_ok: boolean; count: number; head?: st
 const EXAMPLE =
   "build a child-safety classifier — the governance layer should detect child-specific risks, present safer implementation options, and require explicit choices on escalation, retention and evaluation";
 
+// Labeled try-it prompts for the coding agent. The tag tells the developer what
+// each one is meant to demonstrate: the first two are child-directed and should
+// trip the governance gate; the last is ordinary work that runs straight through.
+const BUILD_SAMPLES: { tag: "trips the gate" | "standard"; text: string }[] = [
+  { tag: "trips the gate", text: EXAMPLE },
+  { tag: "trips the gate", text: "add a feature to our kids' learning app that stores students' chat messages and flags bullying" },
+  { tag: "standard", text: "write a FastAPI endpoint that paginates a list of products by category" },
+];
+
 /* ───────── mock fallback (demo resilience if backend/LLM is down) ───────── */
 const CHILD_RE = /child|kid|minor|under ?18|teen|student|pupil|coppa|under-?age|school|toddler|infant|nursery/i;
 
@@ -138,11 +147,11 @@ def evaluate_fairness(clf, samples, groups, tolerance=0.05) -> bool:
 }
 
 /* ───────── API ───────── */
-async function callAgent(prompt: string, choices?: Record<string, string>) {
+async function callAgent(prompt: string, choices?: Record<string, string>, systemPrompt?: string) {
   const r = await fetch("/api/generate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt, choices: choices || {} }),
+    body: JSON.stringify({ prompt, choices: choices || {}, system_prompt: systemPrompt || undefined }),
   });
   if (!r.ok) throw new Error(`backend ${r.status}`);
   const j = await r.json();
@@ -184,6 +193,74 @@ function parseNarrative(md: string): { body: string; seal?: string; intro?: bool
         intro: i === 0,
       };
     });
+}
+
+/* ───────── markdown renderer for the policy tab (headings/lists/quotes/code) ───────── */
+function docInline(text: string): React.ReactNode[] {
+  const nodes: React.ReactNode[] = [];
+  const re = /(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`)/g;
+  let last = 0, k = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) {
+    if (m.index > last) nodes.push(text.slice(last, m.index));
+    const tok = m[0];
+    if (tok.startsWith("**")) nodes.push(<b key={k++}>{tok.slice(2, -2)}</b>);
+    else if (tok.startsWith("`")) nodes.push(<code key={k++} className="dcode">{tok.slice(1, -1)}</code>);
+    else nodes.push(<i key={k++}>{tok.slice(1, -1)}</i>);
+    last = m.index + tok.length;
+  }
+  if (last < text.length) nodes.push(text.slice(last));
+  return nodes;
+}
+
+function renderDoc(md: string): React.ReactNode[] {
+  const out: React.ReactNode[] = [];
+  const lines = md.replace(/\r/g, "").split("\n");
+  let i = 0, key = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    // fenced code block
+    if (line.trim().startsWith("```")) {
+      const buf: string[] = [];
+      i++;
+      while (i < lines.length && !lines[i].trim().startsWith("```")) buf.push(lines[i++]);
+      i++; // skip closing fence
+      out.push(<pre key={key++} className="dpre"><code>{buf.join("\n")}</code></pre>);
+      continue;
+    }
+    // horizontal rule
+    if (/^\s*---+\s*$/.test(line)) { out.push(<hr key={key++} className="dhr" />); i++; continue; }
+    // headings
+    const h = line.match(/^(#{1,4})\s+(.*)$/);
+    if (h) {
+      const lvl = h[1].length;
+      const Tag = (["h2", "h3", "h4", "h4"][lvl - 1]) as "h2" | "h3" | "h4";
+      out.push(<Tag key={key++} className={`dh dh${lvl}`}>{docInline(h[2])}</Tag>);
+      i++; continue;
+    }
+    // blockquote (consecutive > lines)
+    if (/^\s*>/.test(line)) {
+      const buf: string[] = [];
+      while (i < lines.length && /^\s*>/.test(lines[i])) buf.push(lines[i++].replace(/^\s*>\s?/, ""));
+      out.push(<blockquote key={key++} className="dquote">{docInline(buf.join(" ").trim())}</blockquote>);
+      continue;
+    }
+    // bullet list (consecutive - / * lines)
+    if (/^\s*[-*]\s+/.test(line)) {
+      const items: string[] = [];
+      while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) items.push(lines[i++].replace(/^\s*[-*]\s+/, ""));
+      out.push(<ul key={key++} className="dul">{items.map((it, j) => <li key={j}>{docInline(it)}</li>)}</ul>);
+      continue;
+    }
+    // blank line
+    if (!line.trim()) { i++; continue; }
+    // paragraph (gather until blank / block start)
+    const buf: string[] = [];
+    while (i < lines.length && lines[i].trim() &&
+      !/^\s*(#{1,4}\s|[-*]\s|>|---+\s*$|```)/.test(lines[i])) buf.push(lines[i++]);
+    out.push(<p key={key++} className="dp">{docInline(buf.join(" "))}</p>);
+  }
+  return out;
 }
 
 /* ───────── child-safety chat tab ───────── */
@@ -409,7 +486,7 @@ function mockChat(message: string): Assessment {
 }
 
 function ChildChat({
-  turns, setTurns, last, setLast, onOpenAudit, dev,
+  turns, setTurns, last, setLast, onOpenAudit, dev, policy, setPolicy,
 }: {
   turns: Turn[];
   setTurns: React.Dispatch<React.SetStateAction<Turn[]>>;
@@ -417,9 +494,12 @@ function ChildChat({
   setLast: React.Dispatch<React.SetStateAction<Assessment | null>>;
   onOpenAudit: () => void;
   dev: boolean;
+  policy: string;
+  setPolicy: React.Dispatch<React.SetStateAction<string>>;
 }) {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [showPolicy, setShowPolicy] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => { ref.current?.scrollTo({ top: 1e9, behavior: "smooth" }); }, [turns, busy]);
 
@@ -432,7 +512,7 @@ function ChildChat({
     try {
       const r = await fetch("/api/chat", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: m }),
+        body: JSON.stringify({ message: m, system_prompt: policy.trim() || undefined }),
       });
       if (!r.ok) throw new Error();
       const j = await r.json();
@@ -459,6 +539,7 @@ function ChildChat({
               assistant replies supportively, while a backend safeguarding layer scores the message
               across five domains and escalates to a human when needed. The child never sees the scores.
             </p>
+            <div className="trylab">Each sample is written to surface a different concern — watch the assessment and escalation change:</div>
             <div className="samples">
               {SAMPLES.map((s, i) => (
                 <button key={i} className="sample" onClick={() => send(s.text)}>
@@ -499,6 +580,24 @@ function ChildChat({
           </div>
         )}
 
+        <div className="polbar">
+          <button className={`poltog ${showPolicy ? "open" : ""} ${policy.trim() ? "active" : ""}`}
+            onClick={() => setShowPolicy((v) => !v)}>
+            <span className="polcaret">{showPolicy ? "▾" : "▸"}</span>
+            Custom policy
+            {policy.trim() ? <span className="polon">active</span> : <span className="poloff">optional · defaults to child-policy.md</span>}
+          </button>
+          {showPolicy && (
+            <textarea
+              className="poltext"
+              value={policy}
+              placeholder="Paste your own child-safety policy for this deployment. Leave blank to use the repo's child-policy.md. The structured assessment + escalation contract is always kept."
+              onChange={(e) => setPolicy(e.target.value)}
+              rows={5}
+            />
+          )}
+        </div>
+
         <div className="composer">
           <textarea
             value={input}
@@ -532,7 +631,7 @@ function ChildChat({
                 <span className="escmeaning">{_escMeaning(last.escalation)}</span>
               </div>
               <div className="drow"><span className="dname">primary concern</span><span className="dval set">{last.primary_concern}</span></div>
-              <div className="drow"><span className="dname">urgency</span><span className="dval">{last.urgency}/9</span></div>
+              <div className="drow"><span className="dname">urgency</span><span className="dval urg">{last.urgency}/9</span></div>
               <div className="drow"><span className="dname">confidence</span><span className="dval">{last.confidence}</span></div>
             </>
           ) : <div className="muted small">send a message to see the assessment</div>}
@@ -589,7 +688,7 @@ function _escMeaning(s: string) {
 
 /* ───────── component ───────── */
 export default function Page() {
-  const [mode, setMode] = useState<"build" | "chat">("build");
+  const [mode, setMode] = useState<"build" | "chat" | "policy">("build");
   const [items, setItems] = useState<Item[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -601,7 +700,30 @@ export default function Page() {
   // child-chat state lifted here so it survives tab switches (ChildChat unmounts on switch)
   const [childTurns, setChildTurns] = useState<Turn[]>([]);
   const [childLast, setChildLast] = useState<Assessment | null>(null);
+  // custom policies (optional). Blank => backend falls back to AGENTS.md / child-policy.md.
+  const [buildPolicy, setBuildPolicy] = useState("");
+  const [showBuildPolicy, setShowBuildPolicy] = useState(false);
+  const [chatPolicy, setChatPolicy] = useState("");
+  // the governing docs shown in the AGENTS.md tab
+  const [policyDoc, setPolicyDoc] = useState<{ agents_md: string; child_policy_md: string } | null>(null);
+  const [policyWhich, setPolicyWhich] = useState<"agents" | "child">("agents");
+  const [policyErr, setPolicyErr] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  // lazily load the policy docs the first time the AGENTS.md tab is opened
+  useEffect(() => {
+    if (mode !== "policy" || policyDoc) return;
+    (async () => {
+      try {
+        const r = await fetch("/api/policy");
+        if (!r.ok) throw new Error();
+        setPolicyDoc(await r.json());
+        setPolicyErr(false);
+      } catch {
+        setPolicyErr(true);
+      }
+    })();
+  }, [mode, policyDoc]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: 1e9, behavior: "smooth" });
@@ -666,7 +788,7 @@ export default function Page() {
     setInput("");
     setBusy(true);
     try {
-      const res = await callAgent(prompt);
+      const res = await callAgent(prompt, undefined, buildPolicy.trim() || undefined);
       if (res.phase === "gate")
         setItems((x) => [...x, { role: "gate", gate: res, prompt, chosen: {}, done: false }]);
       else setItems((x) => [...x, { role: "code", code: res }]);
@@ -700,7 +822,7 @@ export default function Page() {
     setItems((x) => x.map((m, i) => (i === idx && m.role === "gate" ? { ...m, done: true } : m)));
     setBusy(true);
     try {
-      const res = await callAgent(it.prompt, choices);
+      const res = await callAgent(it.prompt, choices, buildPolicy.trim() || undefined);
       setItems((x) => [...x, { role: "code", code: res.phase === "code" ? res : mockCode(true) }]);
     } catch {
       setItems((x) => [...x, { role: "code", code: mockCode(true) }]);
@@ -744,12 +866,13 @@ export default function Page() {
           <div className="logo">SG</div>
           <div>
             <div className="bname">ssgcheck</div>
-            <div className="bsub">{mode === "build" ? "coding agent" : "child-safety chat"}</div>
+            <div className="bsub">{mode === "build" ? "coding agent" : mode === "chat" ? "child-safety chat" : "governing policy"}</div>
           </div>
         </div>
         <div className="tabs">
           <button className={mode === "build" ? "on" : ""} onClick={() => setMode("build")}>Coding agent</button>
           <button className={mode === "chat" ? "on" : ""} onClick={() => setMode("chat")}>Child-safety chat</button>
+          <button className={mode === "policy" ? "on" : ""} onClick={() => setMode("policy")}>AGENTS.md</button>
         </div>
         <button className={`devtog ${dev ? "on" : ""}`} onClick={() => setDev((d) => !d)}>
           <span className="dot" /> Developer mode
@@ -764,7 +887,42 @@ export default function Page() {
           setLast={setChildLast}
           onOpenAudit={openAudit}
           dev={dev}
+          policy={chatPolicy}
+          setPolicy={setChatPolicy}
         />
+      ) : mode === "policy" ? (
+        <div className="docbody">
+          <div className="docmain">
+            <div className="dochd">
+              <div>
+                <div className="doctitle">{policyWhich === "agents" ? "AGENTS.md" : "child-policy.md"}</div>
+                <div className="docsub">
+                  {policyWhich === "agents"
+                    ? "the build-time governance gate the coding agent runs under"
+                    : "the runtime safeguarding policy the child-safety chat runs under"}
+                </div>
+              </div>
+              <div className="docswitch">
+                <button className={policyWhich === "agents" ? "on" : ""} onClick={() => setPolicyWhich("agents")}>AGENTS.md</button>
+                <button className={policyWhich === "child" ? "on" : ""} onClick={() => setPolicyWhich("child")}>child-policy.md</button>
+              </div>
+            </div>
+            <div className="doc">
+              {policyDoc ? (
+                renderDoc(policyWhich === "agents" ? policyDoc.agents_md : policyDoc.child_policy_md)
+              ) : policyErr ? (
+                <div className="aempty">
+                  Couldn't reach the backend to load the policy. Start it with{" "}
+                  <code>uv run --extra server python monitor/app.py</code>, or read it on{" "}
+                  <a href="https://github.com/un-ssg-agent/ssgcheck/blob/main/AGENTS.md" target="_blank" rel="noreferrer">GitHub</a>.
+                </div>
+              ) : (
+                <div className="aempty">loading policy…</div>
+              )}
+            </div>
+            <div className="foot">Read-only · this is the default a custom policy overrides per request · governed by ssgcheck</div>
+          </div>
+        </div>
       ) : (
         <>
       <div className="body">
@@ -778,9 +936,15 @@ export default function Page() {
                 then writes the code under <code>AGENTS.md</code> and logs the decision to a
                 tamper-evident audit trail.
               </p>
-              <button className="example" onClick={() => setInput(EXAMPLE)}>
-                Try: “{EXAMPLE.slice(0, 60)}…”
-              </button>
+              <div className="trylab">Try one — tags show what each is meant to demonstrate:</div>
+              <div className="bsamples">
+                {BUILD_SAMPLES.map((s, i) => (
+                  <button key={i} className="bsample" onClick={() => setInput(s.text)}>
+                    <span className={`btag ${s.tag === "standard" ? "std" : "gate"}`}>{s.tag}</span>
+                    <span className="btext">{s.text}</span>
+                  </button>
+                ))}
+              </div>
             </div>
           )}
 
@@ -882,6 +1046,24 @@ export default function Page() {
               </div>
             </div>
           )}
+
+          <div className="polbar">
+            <button className={`poltog ${showBuildPolicy ? "open" : ""} ${buildPolicy.trim() ? "active" : ""}`}
+              onClick={() => setShowBuildPolicy((v) => !v)}>
+              <span className="polcaret">{showBuildPolicy ? "▾" : "▸"}</span>
+              Custom policy
+              {buildPolicy.trim() ? <span className="polon">active</span> : <span className="poloff">optional · defaults to AGENTS.md</span>}
+            </button>
+            {showBuildPolicy && (
+              <textarea
+                className="poltext"
+                value={buildPolicy}
+                placeholder="Paste your own governing policy for this build. Leave blank to use the repo's AGENTS.md. The structured gate/code output contract is always kept."
+                onChange={(e) => setBuildPolicy(e.target.value)}
+                rows={5}
+              />
+            )}
+          </div>
 
           <div className="composer">
             <textarea
@@ -1241,4 +1423,51 @@ const CSS = `
 .distdompill{border-radius:5px;padding:1px 7px;font-size:10px;font-weight:700;color:#fff;}
 .distdot{width:7px;height:7px;border-radius:999px;flex-shrink:0;}
 .distcount{font-size:10.5px;color:#6f7682;width:22px;text-align:right;font-variant-numeric:tabular-nums;}
+
+/* urgency: emphasized red + bold (key severity signal) */
+.dval.urg{color:var(--red);font-weight:800;}
+
+/* clearer try-it sample prompts (coding agent) */
+.trylab{margin:18px 0 9px;font-size:12px;color:var(--mut);text-align:left;}
+.bsamples{display:flex;flex-direction:column;gap:8px;text-align:left;}
+.bsample{display:flex;align-items:center;gap:11px;border:1px solid var(--line);background:#fff;border-radius:11px;padding:11px 13px;cursor:pointer;}
+.bsample:hover{border-color:#cfcfd6;}
+.btag{flex:none;font-size:10px;font-weight:700;letter-spacing:.03em;text-transform:uppercase;padding:3px 8px;border-radius:6px;width:92px;text-align:center;}
+.btag.gate{background:#fde9c8;color:#92600c;}
+.btag.std{background:#e3f6e9;color:#1f7a3d;}
+.btext{font-size:13px;color:#3a3a40;}
+
+/* custom-policy panel (both tabs) */
+.polbar{max-width:760px;width:100%;margin:0 auto;}
+.poltog{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line);background:#fff;color:#55555b;border-radius:9px;padding:7px 11px;font-size:12.5px;cursor:pointer;}
+.poltog:hover{border-color:#cfcfd6;}
+.poltog.active{border-color:var(--acc);color:var(--ink);}
+.polcaret{font-size:10px;color:var(--mut);}
+.polon{font-size:10px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--acc);background:#eef3ff;border-radius:5px;padding:2px 7px;}
+.poloff{font-size:11px;color:var(--mut);}
+.poltext{display:block;width:100%;margin-top:8px;resize:vertical;border:1px solid #dcdce2;border-radius:11px;padding:11px 13px;font:12.5px/1.5 inherit;background:#fff;outline:none;color:var(--ink);}
+.poltext:focus{border-color:#bfbfc8;}
+
+/* AGENTS.md / child-policy.md reading tab */
+.docbody{flex:1;display:flex;min-height:0;}
+.docmain{flex:1;overflow-y:auto;padding:26px 22px 0;display:flex;flex-direction:column;}
+.dochd{max-width:820px;width:100%;margin:0 auto 14px;display:flex;align-items:flex-start;justify-content:space-between;gap:12px;}
+.doctitle{font-size:18px;font-weight:650;font-family:ui-monospace,Menlo,monospace;}
+.docsub{font-size:12.5px;color:var(--mut);margin-top:3px;}
+.docswitch{display:flex;gap:4px;background:#f0f0f3;border-radius:9px;padding:3px;flex:none;}
+.docswitch button{border:none;background:transparent;color:#6b6b70;font-size:12px;font-weight:550;padding:5px 11px;border-radius:7px;cursor:pointer;font-family:ui-monospace,Menlo,monospace;}
+.docswitch button.on{background:#fff;color:#1d1d1f;box-shadow:0 1px 2px rgba(0,0,0,.08);}
+.doc{max-width:820px;width:100%;margin:0 auto;padding-bottom:24px;}
+.doc .dh{font-weight:650;line-height:1.3;}
+.doc .dh2{font-size:18px;margin:26px 0 10px;padding-bottom:7px;border-bottom:1px solid var(--line);}
+.doc .dh3{font-size:15px;margin:20px 0 8px;}
+.doc .dh4{font-size:13.5px;margin:16px 0 6px;color:#3a3a40;}
+.doc .dp{margin:0 0 12px;color:#3a3a40;font-size:13.5px;line-height:1.65;}
+.doc .dul{margin:0 0 12px;padding-left:20px;display:flex;flex-direction:column;gap:5px;}
+.doc .dul li{color:#3a3a40;font-size:13.5px;line-height:1.55;}
+.doc .dquote{margin:0 0 12px;padding:10px 14px;border-left:3px solid var(--acc);background:#f5f8ff;border-radius:0 8px 8px 0;color:#3a3a40;font-size:13.5px;line-height:1.6;}
+.doc .dpre{margin:0 0 12px;background:#0f1115;color:#e6e6ea;padding:13px;border-radius:10px;overflow-x:auto;font:12px/1.6 ui-monospace,Menlo,Consolas,monospace;white-space:pre;}
+.doc .dcode{font-family:ui-monospace,Menlo,monospace;font-size:12px;background:#ececf0;border-radius:4px;padding:1px 5px;}
+.doc .dhr{border:none;border-top:1px solid var(--line);margin:18px 0;}
+.aempty a{color:var(--acc);}
 `;

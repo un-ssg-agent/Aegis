@@ -177,16 +177,21 @@ class AckIn(BaseModel):
 class GenerateIn(BaseModel):
     prompt: str
     choices: dict | None = None   # {} on first call; filled after the dev picks options
+    # optional custom governing policy for the developer's own use case; blank/None
+    # falls back to the repo's AGENTS.md.
+    system_prompt: str | None = None
 
 
 class ChatIn(BaseModel):
     message: str
+    # optional custom child-safety policy; blank/None falls back to child-policy.md.
+    system_prompt: str | None = None
 
 
 @app.get("/")
 def index():
     return {"service": "ssgcheck-monitor", "ui": "run monitor-web (Next.js) on :3000",
-            "endpoints": ["/api/generate", "/api/chat", "/api/narrative", "/api/audit", "/assess", "/api/alarms", "/api/ack"]}
+            "endpoints": ["/api/generate", "/api/chat", "/api/policy", "/api/narrative", "/api/audit", "/assess", "/api/alarms", "/api/ack"]}
 
 
 @app.post("/api/generate")
@@ -196,7 +201,7 @@ def generate_endpoint(body: GenerateIn):
     if not body.prompt.strip():
         return JSONResponse({"error": "prompt required"}, 400)
     try:
-        return agent.generate(body.prompt, body.choices or {})
+        return agent.generate(body.prompt, body.choices or {}, policy=body.system_prompt)
     except Exception as e:
         return JSONResponse({"error": f"{type(e).__name__}: {e}"}, 502)
 
@@ -209,7 +214,7 @@ def chat_endpoint(body: ChatIn):
     if not body.message.strip():
         return JSONResponse({"error": "message required"}, 400)
     try:
-        return agent.child_chat(body.message)
+        return agent.child_chat(body.message, policy=body.system_prompt)
     except Exception as e:
         return JSONResponse({"error": f"{type(e).__name__}: {e}"}, 502)
 
@@ -219,6 +224,15 @@ def assess_endpoint(body: AssessIn):
     if body.kind not in MEASURES:
         return JSONResponse({"error": "kind must be 'code' or 'conversation'"}, 400)
     return assess(body.kind, body.content)
+
+
+@app.get("/api/policy")
+def api_policy():
+    """The governing policy documents (read-only), so the UI can show the exact
+    AGENTS.md / child-policy.md the agents actually run under. These are also the
+    defaults a custom 'system_prompt' overrides per request."""
+    return {"agents_md": agent._load_agents_md(),
+            "child_policy_md": agent._load_child_policy()}
 
 
 @app.get("/api/narrative")

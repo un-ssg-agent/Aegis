@@ -92,9 +92,17 @@ def _extract_json(text: str):
         return None
 
 
-def generate(prompt: str, choices: dict | None = None, session: str = "web") -> dict:
-    """Run one agent turn. choices={} on the first call; filled after the dev picks."""
-    system = f"You operate under the following policy.\n\n{_load_agents_md()}\n\n{CONTRACT}"
+def generate(prompt: str, choices: dict | None = None, session: str = "web",
+             policy: str | None = None) -> dict:
+    """Run one agent turn. choices={} on the first call; filled after the dev picks.
+
+    policy: an optional custom governing prompt for the developer's own use case.
+    When it is blank/None we fall back to the repo's AGENTS.md, so behavior is
+    unchanged unless the caller deliberately supplies one. The output CONTRACT is
+    always appended either way, so the structured gate/code response is preserved.
+    """
+    policy_text = (policy or "").strip() or _load_agents_md()
+    system = f"You operate under the following policy.\n\n{policy_text}\n\n{CONTRACT}"
     user = (prompt or "").strip()
     if choices:
         picked = "; ".join(f"{k}={v}" for k, v in choices.items())
@@ -345,10 +353,17 @@ _AFFECTED_ROLE_MAP = {
 }
 
 
-def child_chat(message: str, session: str = "web-child") -> dict:
+def child_chat(message: str, session: str = "web-child",
+               policy: str | None = None) -> dict:
     """Run one child-facing turn: produce a safe reply + a 5-axis safeguarding
-    assessment, and (at S4+) log the escalation to the tamper-evident chain."""
-    system = f"{_load_child_policy()}\n\n{CHILD_CONTRACT}"
+    assessment, and (at S4+) log the escalation to the tamper-evident chain.
+
+    policy: optional custom child-safety policy for a specific deployment. Blank/
+    None falls back to the repo's child-policy.md; the CHILD_CONTRACT (and thus the
+    structured assessment + escalation behavior) is always appended on top.
+    """
+    policy_text = (policy or "").strip() or _load_child_policy()
+    system = f"{policy_text}\n\n{CHILD_CONTRACT}"
     msg, provider = llm_client.chat(
         [{"role": "system", "content": system},
          {"role": "user", "content": (message or "").strip()}],
