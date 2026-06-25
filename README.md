@@ -1,6 +1,6 @@
 # ssgcheck — child-safety governance & non-repudiable oversight for AI
 
-> **UN Tech Over 2026 · Track 1 — Safety, Supervision and Governance in the Agentic World.**
+> **UN Tech Over 2026 Finalist · Track 1 — Safety, Supervision and Governance in the Agentic World.**
 
 `ssgcheck` is two cooperating safeguards for AI systems that touch children,
 sharing one tamper-evident audit trail:
