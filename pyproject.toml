@@ -11,6 +11,10 @@ dependencies = ["mcp>=1.2.0"]
 fairness = ["fairlearn>=0.10", "pandas>=2.0"]
 # Demo monitor web server (monitor/app.py): uv sync --extra server
 server = ["fastapi>=0.110", "uvicorn>=0.27", "pydantic>=2.0"]
+# Strands-based agent backend (monitor/strands_agent.py): uv sync --extra strands
+# Bedrock support comes bundled in strands-agents itself (boto3 dependency);
+# Ollama needs a separately running `ollama serve` process, no extra pip package.
+strands = ["strands-agents>=0.1.0"]
 
 # The auditor core (core.py) is pure stdlib and needs none of these — only the
 # MCP server wrapper (server.py) imports `mcp`. Managed with uv per project reqs:
