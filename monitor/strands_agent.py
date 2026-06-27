@@ -352,7 +352,7 @@ def _format_crisis_resource(res: dict) -> str:
 
 
 def child_chat(message: str, session: str = "web-child",
-               policy: str | None = None) -> dict:
+               policy: str | None = None, region_hint: str | None = None) -> dict:
     """Run one child-facing turn. Same signature and return shape as
     agent.child_chat() — produces a safe reply + 5-axis safeguarding
     assessment, surfaces a verified crisis resource at S4+ via
@@ -461,7 +461,10 @@ def child_chat(message: str, session: str = "web-child",
         _cat = max(_eligible, key=lambda d: norm[d]["score"])
         if norm[_cat]["score"] < 4:
             _cat = "distress"  # high escalation implies distress — force a verified resource
-        _res = _lookup_crisis_resource_impl(category=_cat, region_hint=detected_language)
+        # region_hint (ephemeral, from the request's coarse location) picks the
+        # verified regional line; when unknown it stays None and the lookup falls
+        # back to the international directory — never a wrong-country number.
+        _res = _lookup_crisis_resource_impl(category=_cat, region_hint=region_hint)
         if _res:
             _reply = result_dict["reply"]
             _already = bool(

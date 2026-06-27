@@ -31,7 +31,7 @@ import re
 import sys
 from collections import Counter
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -206,15 +206,53 @@ def generate_endpoint(body: GenerateIn):
         return JSONResponse({"error": f"{type(e).__name__}: {e}"}, 502)
 
 
+# ── Ephemeral region detection for crisis-resource routing ONLY ──
+# Reads a coarse (country-level) code from upstream proxy/CDN headers, maps it to
+# a RESOURCES region key, and passes it straight into child_chat for the lookup.
+# It is NEVER logged, hashed, or written to the audit chain — location-in,
+# resource-out, nothing retained. Raw IP is never read or stored. Unknown region
+# falls back to the verified international directory, so a wrong guess can never
+# surface a wrong-country number.
+_COUNTRY_TO_REGION = {
+    "US": "en-US",
+    "GB": "en-GB",
+    "CA": "en-CA",
+    "AU": "en-AU",
+    "IE": "en-IE",
+    "NZ": "en-NZ",
+    "IN": "en-IN",
+    # Extend alongside the verified RESOURCES table; unmapped/unverified
+    # countries fall through to the international directory.
+}
+
+
+def _client_region(request: Request) -> str | None:
+    """Best-effort, country-level region key (e.g. 'en-US') from proxy headers.
+    Used solely to pick a verified crisis resource. Returns None when unknown."""
+    country = (
+        request.headers.get("cf-ipcountry")            # Cloudflare
+        or request.headers.get("x-vercel-ip-country")  # Vercel edge (if proxied via frontend)
+        or request.headers.get("x-country-code")
+        or request.headers.get("x-geo-country")
+    )
+    if not country:
+        return None
+    country = country.strip().upper()
+    if country in ("", "XX", "T1", "ZZ"):  # unknown / anonymized / Tor
+        return None
+    return _COUNTRY_TO_REGION.get(country)
+
+
 @app.post("/api/chat")
-def chat_endpoint(body: ChatIn):
+def chat_endpoint(body: ChatIn, request: Request):
     """Child-facing safeguarding chat: returns a calm child-facing reply plus the
     internal 5-axis assessment (bullying/grooming/abuse/self-harm/distress), escalation,
     and human-review flag. Logs to the hash chain when a human takes over (S4+)."""
     if not body.message.strip():
         return JSONResponse({"error": "message required"}, 400)
+    region = _client_region(request)  # ephemeral; not stored
     try:
-        return agent.child_chat(body.message, policy=body.system_prompt)
+        return agent.child_chat(body.message, policy=body.system_prompt, region_hint=region)
     except Exception as e:
         return JSONResponse({"error": f"{type(e).__name__}: {e}"}, 502)
 
