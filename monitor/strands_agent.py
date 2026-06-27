@@ -49,7 +49,7 @@ from strands_schemas import (
     GateOutput, CodeOutput, ChildChatOutput,
 )
 from strands_tools import log_decision, classify_risk, lookup_crisis_resource
-from strands_tools import _log_decision_impl
+from strands_tools import _log_decision_impl, _lookup_crisis_resource_impl
 
 
 # ───────────────────────── model selection ─────────────────────────
@@ -306,6 +306,30 @@ def _normalize_age_status(raw: str) -> str:
     return v if v in _VALID_AGE_STATUS else "possible_child"
 
 
+def _format_crisis_resource(res: dict) -> str:
+    """Render a VERIFIED resource dict (from strands_tools.RESOURCES) as a short,
+    warm, child-appropriate line. Content is only ever the verified fields —
+    name / phone / text / url — never anything model-generated. English lead-in;
+    for non-English replies the model's in-language woven version is preferred
+    (see the system prompt), and this deterministic net only appends when the
+    model did not surface the resource itself.
+    """
+    name = res.get("name", "a crisis helpline")
+    contact = []
+    if res.get("phone"):
+        contact.append(f"call or text {res['phone']}")
+    elif res.get("text"):
+        contact.append(str(res["text"]))
+    if res.get("url"):
+        contact.append(str(res["url"]))
+    how = f" ({' — '.join(contact)})" if contact else ""
+    return (
+        f"And if it ever feels like too much to carry on your own, you don't have "
+        f"to — you can reach {name}{how}. People there are ready to listen any time, "
+        f"and reaching out doesn't take anything away from you."
+    )
+
+
 def child_chat(message: str, session: str = "web-child",
                policy: str | None = None) -> dict:
     """Run one child-facing turn. Same signature and return shape as
@@ -324,14 +348,41 @@ def child_chat(message: str, session: str = "web-child",
         "Produce a child-facing reply plus an internal 5-axis safeguarding "
         "assessment (bullying, grooming, abuse, self_harm, distress; each "
         "0-9 with a one-sentence reason even when 0). The child NEVER sees "
-        "the assessment — keep all scores and labels OUT of the reply field. "
-        "If escalation reaches S4 or higher, you may call lookup_crisis_resource "
-        "to obtain a VERIFIED resource and weave it naturally into the reply — "
-        "never write a hotline number or URL from your own memory. Write the "
-        "reply in the same language the child wrote in; the assessment fields "
-        "stay in English regardless of the child's language. A language you "
-        "are less confident in is a safety signal, not a reason to relax — "
-        "lower language_confidence should pull overall confidence DOWN, never up."
+        "the assessment — keep all scores and labels OUT of the reply field.\n\n"
+        "HOW TO WRITE 'reply' — this is the ONLY thing the child reads. A one-line "
+        "acknowledgment that ends the conversation ('I hear you. I'm here to listen.') "
+        "is NOT acceptable; it leaves the child alone and surfaces nothing. Write a warm, "
+        "genuinely engaged reply, normally 3-5 sentences, doing the work of an attentive, "
+        "careful adult. Compose it from these moves, in order, skipping any that don't fit: "
+        "(1) REFLECT specifically — name back the actual thing the child said, in their "
+        "words, not a generic template; show you actually read it. "
+        "(2) VALIDATE briefly — the feeling is understandable — without judging anyone or "
+        "treating a signal as a proven fact. "
+        "(3) STAY CURIOUS — ask ONE open, gentle follow-up question, never an interrogation "
+        "and never a demand for identifying details (name, school, exact location, contacts). "
+        "(4) OFFER something concrete — one or two realistic, low-pressure, optional next "
+        "steps the child stays in control of, not a generic 'talk to a trusted adult' tacked "
+        "on every time. "
+        "(5) KEEP THE DOOR OPEN — end by inviting them to keep going, not a closing line. "
+        "Tone: warm but bounded; talk WITH the child, not AT them; plain, age-appropriate "
+        "language; never clinical, never preachy, never a wall of advice. You are AI, not a "
+        "human, friend, therapist, or parent — never pretend otherwise and never foster "
+        "dependency or secrecy. Match depth to the situation: everyday stuff (boredom, a fun "
+        "question, mild frustration) stays friendly and light, answers the actual question, "
+        "and does NOT import a crisis tone or pile on resources; sensitive or serious content "
+        "stays calm, leads with the most time-sensitive concern, asks only safe minimal "
+        "clarification, and keeps supporting the child rather than handing over a resource and "
+        "stopping. NEVER provide self-harm or violence methods, concealment advice, or "
+        "anything the policy prohibits, and NEVER reveal scores, labels, or S-levels in the "
+        "reply.\n\n"
+        "If escalation reaches S4 or higher, you SHOULD call lookup_crisis_resource to obtain "
+        "a VERIFIED resource and weave it naturally into the reply, in the child's language — "
+        "never write a hotline number or URL from your own memory. (The system also surfaces a "
+        "verified resource deterministically at S4+, but weaving it in yourself reads better "
+        "and stays in-language.) Write the reply in the same language the child wrote in; the "
+        "assessment fields stay in English regardless of the child's language. A language you "
+        "are less confident in is a safety signal, not a reason to relax — lower "
+        "language_confidence should pull overall confidence DOWN, never up."
     )
     agent = Agent(model=_MODEL, system_prompt=system,
                    tools=[lookup_crisis_resource, log_decision], callback_handler=None)
@@ -377,6 +428,28 @@ def child_chat(message: str, session: str = "web-child",
         "language_confidence": language_confidence,
         "provider": _MODEL_PROVIDER,
     }
+
+    # ── Deterministic crisis-resource guarantee (S4+) ──
+    # Integrity lives in code, not in the model: at S4+ a VERIFIED helpline is
+    # surfaced by this function, never left to the model's discretion. The text
+    # comes ONLY from the verified RESOURCES table via _lookup_crisis_resource_impl
+    # — never from model memory. If the model already wove the same resource in
+    # (in the child's language), we detect it by its phone/url and do NOT duplicate.
+    if esc_i >= 4:
+        _eligible = ("self_harm", "abuse", "distress")
+        _cat = max(_eligible, key=lambda d: norm[d]["score"])
+        if norm[_cat]["score"] < 4:
+            _cat = "distress"  # high escalation implies distress — force a verified resource
+        _res = _lookup_crisis_resource_impl(category=_cat, region_hint=detected_language)
+        if _res:
+            _reply = result_dict["reply"]
+            _already = bool(
+                (_res.get("url") and _res["url"] in _reply)
+                or (_res.get("phone") and _res["phone"] in _reply)
+            )
+            if not _already:
+                result_dict["reply"] = _reply.rstrip() + "\n\n" + _format_crisis_resource(_res)
+            result_dict["crisis_resource"] = _res
 
     if human_review:
         overall = max(norm[d]["score"] for d in _DOMAINS)

@@ -147,6 +147,29 @@ RESOURCES: dict[str, dict[str, Any]] = {
 _RESOURCE_ELIGIBLE_CATEGORIES = {"self_harm", "abuse", "distress", "Urgent Safety", "Self-Harm"}
 
 
+def _lookup_crisis_resource_impl(
+    category: str,
+    region_hint: str | None = None,
+    language: str | None = None,
+) -> dict | None:
+    """Plain-Python implementation, called directly by strands_agent.py for the
+    DETERMINISTIC S4+ guarantee (NOT through the @tool wrapper). The returned
+    resource content is ALWAYS drawn from the verified RESOURCES table above —
+    never invented — so this is safe to call with no model in the loop. Returns
+    None if the category isn't safety-critical enough to surface a resource.
+    """
+    if category not in _RESOURCE_ELIGIBLE_CATEGORIES:
+        return None
+    key = region_hint if region_hint in RESOURCES else "default_international"
+    resource = dict(RESOURCES[key])
+    resource["region_used"] = key
+    resource["coverage_note"] = (
+        "International directory — country-specific line not confirmed for this region"
+        if key == "default_international" else "Verified region-specific resource"
+    )
+    return resource
+
+
 @tool
 def lookup_crisis_resource(
     category: str,
@@ -165,13 +188,4 @@ def lookup_crisis_resource(
     Defaults to the international directory when unknown — coverage here is
     intentionally small; extend RESOURCES before claiming broader reach.
     """
-    if category not in _RESOURCE_ELIGIBLE_CATEGORIES:
-        return None
-    key = region_hint if region_hint in RESOURCES else "default_international"
-    resource = dict(RESOURCES[key])
-    resource["region_used"] = key
-    resource["coverage_note"] = (
-        "International directory — country-specific line not confirmed for this region"
-        if key == "default_international" else "Verified region-specific resource"
-    )
-    return resource
+    return _lookup_crisis_resource_impl(category, region_hint, language)
