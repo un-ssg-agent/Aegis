@@ -40,7 +40,7 @@ ROOT = os.path.abspath(os.path.join(HERE, ".."))
 sys.path.insert(0, os.path.join(ROOT, "mcp-servers", "compliance-auditor"))
 import core          # noqa: E402  (audit hash chain)
 import llm_client    # noqa: E402  (the 3 providers)
-import agent         # noqa: E402  (web coding agent — AGENTS.md gate + codegen)
+import strands_agent as agent         # noqa: E402  (web coding agent — AGENTS.md gate + codegen)
 
 THRESHOLD = float(os.environ.get("ALARM_THRESHOLD", "0.6"))
 

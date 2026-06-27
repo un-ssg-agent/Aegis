@@ -56,7 +56,6 @@ from strands_tools import _log_decision_impl
 
 def _build_model():
     """Local-first, cloud-capable: try Ollama, fall back to Bedrock.
-
     Same Strands Agent code runs against either — only this function changes
     if you want to force one or the other (e.g. for a live demo with no
     network dependency, hardcode the Ollama branch).
@@ -70,6 +69,17 @@ def _build_model():
         # waiting on a connect-timeout for every single request.
         urllib.request.urlopen(f"{ollama_host}/api/tags", timeout=1.5)
         return OllamaModel(host=ollama_host, model_id=ollama_model, temperature=0.2), "ollama"
+    except Exception:
+        pass
+
+    try:
+        from strands.models.litellm import LiteLLMModel
+        if os.environ.get("DEEPSEEK_API_KEY"):
+            return LiteLLMModel(
+                client_args={"api_key": os.environ["DEEPSEEK_API_KEY"]},
+                model_id=os.environ.get("LITELLM_MODEL_ID", "deepseek/deepseek-chat"),
+                params={"temperature": 0.2, "max_tokens": 1024},
+            ), "litellm"
     except Exception:
         pass
 
