@@ -72,14 +72,35 @@ def _build_model():
     except Exception:
         pass
 
+    # LiteLLM (OpenAI / DeepSeek / Gemini) — provider chosen by LITELLM_MODEL_ID's
+    # prefix, and the matching API key is selected to go with it. The earlier
+    # version hardcoded the DeepSeek key regardless of model, which sent a
+    # DeepSeek key to OpenAI (auth error) whenever the model was switched.
     try:
         from strands.models.litellm import LiteLLMModel
-        if os.environ.get("DEEPSEEK_API_KEY"):
-            return LiteLLMModel(
-                client_args={"api_key": os.environ["DEEPSEEK_API_KEY"]},
-                model_id=os.environ.get("LITELLM_MODEL_ID", "deepseek/deepseek-v4-pro"),
-                params={"temperature": 0.2, "max_tokens": 1024},
-            ), "litellm"
+        model_id = os.environ.get("LITELLM_MODEL_ID")
+        # If LITELLM_MODEL_ID is unset, infer a default from whichever key exists.
+        if not model_id:
+            if os.environ.get("OPENAI_API_KEY"):
+                model_id = "openai/gpt-4o-mini"
+            elif os.environ.get("DEEPSEEK_API_KEY"):
+                model_id = "deepseek/deepseek-chat"
+            elif os.environ.get("GEMINI_API_KEY"):
+                model_id = "gemini/gemini-2.0-flash"
+        if model_id:
+            provider = model_id.split("/", 1)[0]
+            key_env = {
+                "openai": "OPENAI_API_KEY",
+                "deepseek": "DEEPSEEK_API_KEY",
+                "gemini": "GEMINI_API_KEY",
+            }.get(provider)
+            api_key = os.environ.get(key_env) if key_env else None
+            if api_key:
+                return LiteLLMModel(
+                    client_args={"api_key": api_key},
+                    model_id=model_id,
+                    params={"temperature": 0.2, "max_tokens": 1024},
+                ), "litellm"
     except Exception:
         pass
 
