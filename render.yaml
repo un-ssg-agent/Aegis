@@ -22,7 +22,7 @@ services:
     plan: starter
 
     # The monitor only needs these three — core.py and llm_client.py are pure stdlib.
-    buildCommand: pip install "fastapi>=0.110" "uvicorn[standard]>=0.27" "pydantic>=2.0"
+    buildCommand: pip install "fastapi>=0.110" "uvicorn[standard]>=0.27" "pydantic>=2.0" "strands-agents[litellm]>=0.1.0"
 
     # app.py hardcodes host 127.0.0.1 (localhost-only). Launch uvicorn directly on
     # 0.0.0.0 so Render's router can reach it. --app-dir monitor makes `app:app`

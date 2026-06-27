@@ -77,7 +77,7 @@ def _build_model():
         if os.environ.get("DEEPSEEK_API_KEY"):
             return LiteLLMModel(
                 client_args={"api_key": os.environ["DEEPSEEK_API_KEY"]},
-                model_id=os.environ.get("LITELLM_MODEL_ID", "deepseek/deepseek-chat"),
+                model_id=os.environ.get("LITELLM_MODEL_ID", "deepseek/deepseek-v4-pro"),
                 params={"temperature": 0.2, "max_tokens": 1024},
             ), "litellm"
     except Exception:
